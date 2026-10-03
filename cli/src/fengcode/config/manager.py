@@ -413,7 +413,7 @@ class ConfigManager:
                     else:
                         info[k] = v
         # ★ 未声明时的默认上下文窗口：1M（1_048_576）。
-        #   用户要求「各模型的上下文用户设置的多少他就显示多少；没填就默认 1M」——
+        #   「各模型的上下文用户设置的多少他就显示多少；没填就默认 1M」——
         #   现在主流模型普遍 1M 起步，旧的 128K 兜底会让界面长期显示一个偏小的值。
         #   注意：这里只是**默认值**，用户在模型服务页逐模型填了就以他填的为准
         #   （下面的 context_window_source 判定保证 source=model 时走用户值）。
@@ -425,7 +425,7 @@ class ConfigManager:
             # ★ 判定顺序必须把「逐模型覆盖」放最前：用户在模型服务页给某个模型
             #   单独填了上下文窗口，那就是他显式设置的值，来源应记为 model。
             #   之前漏了这一支，导致填完窗口界面仍按 fallback 判成「未限制」
-            #   （用户实测反馈：设了上下文，右侧栏还是显示未限制）。
+            #   （实测反馈：设了上下文，右侧栏还是显示未限制）。
             ov_used = None
             if provider is not None:
                 ov_used = provider.model_overrides.get(model) or _find_override(provider, model)

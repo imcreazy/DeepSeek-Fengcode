@@ -111,7 +111,7 @@ class TestCatalog:
         # 用户指定顺序：万象 → DeepSeek → 智谱 → MiMo
         order = [k for k in pre if k != "custom"]
         assert order[:4] == ["wanxiang", "deepseek", "zhipu", "mimo"], f"预设顺序不对：{order[:4]}"
-        # 不再预置「本地部署」或「第三方聚合」（用户明确要求删掉）
+        # 不再预置「本地部署」或「第三方聚合」（删掉）
         for gone in ("ollama", "lmstudio", "vllm", "openrouter", "groq", "siliconflow", "nvidia"):
             assert gone not in pre, f"不该再预置 {gone}"
 
@@ -137,9 +137,9 @@ class TestCatalog:
     def test_context_window_source_default_when_unknown(self):
         """没人声明过窗口 → 用默认 1M，来源标 default（不再是「未限制」）。
 
-        ★ 契约变更（用户明确要求）：旧行为是「无人声明 → fallback → 界面显示未限制」，
+        ★ 契约变更：旧行为是「无人声明 → fallback → 界面显示未限制」，
         新行为是「无人声明 → 默认 1M 并照实显示」。理由：主流模型普遍 1M 起步，
-        长期显示「未限制」会让用户以为上下文没有限额，且换模型时读数看着没变化。
+        长期显示「未限制」会看起来像没有限额，且换模型时读数看着没变化。
         用户在模型服务页逐模型填了值仍以他填的为准（见 model_override 那条用例）。
         """
         from fengcode.config.manager import ConfigManager
@@ -287,7 +287,7 @@ class TestSecurity:
             assert classify_command(cmd) == "write", f"应判为改文件：{cmd}"
 
     def test_readonly_command_passes_gate(self):
-        """只读命令不该被审批门拦住（用户实测抱怨「查状态也要批准」）。"""
+        """只读命令不该被审批门拦住（实测抱怨「查状态也要批准」）。"""
         from fengcode.config.schema import PermissionsConfig
         from fengcode.security.approval import ApprovalGate
 
@@ -836,7 +836,7 @@ class TestLLMTypes:
 
         ★ 复现现场：`validate_rules(['tool:zzz_not_a_tool'])` 此前返回空列表 ——
         规则写法毫无问题、界面上也不会报错，但它**永远不会匹配到任何工具**。
-        用户以为自己禁掉了某个工具，其实什么都没禁；这类"安全规则静默失效"
+        容易以为自己禁掉了某个工具，其实什么都没禁；这类"安全规则静默失效"
         比没有规则更危险，所以必须在校验期就拦住，并尽量给出近似建议。
         """
         from fengcode.security.approval import validate_rules

@@ -342,7 +342,7 @@ class ToolRegistry:
                 "preview": result.content[:2000],
                 # ★ 真实绝对路径（files 是 resolve 后的绝对路径）。
                 #   模型侧仍看 content 里的 ~/xxx（省 token），但**界面**必须给出
-                #   完整路径：用户实测「AI 说写好了，我去桌面找不到」——
+                #   完整路径：实测「AI 说写好了，我去桌面找不到」——
                 #   因为 ~ 其实是 fengcode-data\workspace，只是显示成了 ~。
                 "files": list(result.files or []),
             },

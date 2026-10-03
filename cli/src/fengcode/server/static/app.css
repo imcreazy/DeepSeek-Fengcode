@@ -108,8 +108,8 @@
   transition: filter .45s ease;
 }
 /* 全屏遮罩：**唯一**的淡化控制层 —— 侧栏与中间永远一致，不会一处深一处浅。
-   三档（用户实测校准）：
-     · 没说话：统一压到「原来发消息后」那个程度（用户认为那档合适）；
+   三档（实测校准）：
+     · 没说话：统一压到「原来发消息后」那个程度（那档合适）；
      · 有对话 / 正在生成：再深一档；
      · 打开设置：换成糊成色斑（见下面的 settings-open 规则）。
    用遮罩而不是调 #theme-bg 的 opacity：遮罩在最后压一层，天然覆盖整个窗口，
@@ -127,7 +127,7 @@ body.theme-has-image.theme-dimmed #theme-dim { opacity: .8; }    /* 有对话：
 /* 设置中心是整页覆盖：把背景图糊成一块**很淡**的色斑 ——
    「看不到背景，但能看到主题的颜色（粉/蓝）」。
    ★ 1.1.1 这里写成了 saturate(1.35)（加强饱和度）又没有压淡，
-   于是色斑又艳又亮、配上透明的设置面板就看不清字了（用户实测反馈）。
+   于是色斑又艳又亮、配上透明的设置面板就看不清字了（实测）。
    现在：降饱和 + 压淡，只留一层很轻的色调。 */
 body.theme-has-image.settings-open #theme-bg {
   filter: blur(64px) saturate(.85);
@@ -139,7 +139,7 @@ body.theme-has-image.settings-open #theme-dim { opacity: 0; }
 :root { --glass: 34%; }
 /* ---- 图片主题下，面板一律**不铺底色** ----
    ★ 为什么必须这样：只要侧栏/顶栏/右栏自己铺一层白，它就会和遮罩叠加、
-     比中间更白 —— 这正是用户反馈的「新对话时左右侧栏和中间的淡化度不一样」。
+     比中间更白 —— 这正是反馈的「新对话时左右侧栏和中间的淡化度不一样」。
      撤掉之后，屏幕上只有「背景图 + 一层 #theme-dim」，处处一致。
      分隔靠各面板原有的 1px 边框，不靠底色。
    ⚠️ 但**设置面板是例外**（见下）：它是整页覆盖的工作面，必须给自己实底。 */
@@ -152,7 +152,7 @@ body.theme-has-image #statusbar {
 /* ★ 设置面板必须给自己**实底**。
    为什么：设置打开时背景图被糊成一块色斑（糊得越狠颜色越浓），
    如果设置面板也透明，字就直接压在色斑上 —— 又艳又看不清
-   （用户反馈「1.1.1 打开设置颜色太艳，都影响看字了」，1.1.0 之所以正常，
+   （实测「1.1.1 打开设置颜色太艳，都影响看字了」，1.1.0 之所以正常，
    正是因为那时设置面板还有白色底）。背景只是一层底色，
    设置是盖在上面的「一张纸」。 */
 body.theme-has-image #settings-side { background: var(--bg-elev); }
@@ -175,7 +175,7 @@ html[data-fs="15"] { --ui-scale: .92; }
 html[data-fs="17"] { --ui-scale: 1; }
 html[data-fs="19"] { --ui-scale: 1.1; }
 html[data-fs="22"] { --ui-scale: 1.22; }
-/* ★ 中文界面整体加重一档（用户要求，也是中文排版的通行结论）：
+/* ★ 中文界面整体加重一档（也是中文排版的通行结论）：
    汉字笔画密、同字号下比拉丁字母更早糊、看着偏细偏小；
    把正文基准字重从 400 提到 450（可变字体）能让中文更实、更清楚。
    ★ 只在中文界面生效：html[lang^="zh"] —— 英文界面保持 400，免得整体发闷。
@@ -231,7 +231,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 #app.no-sidebar { grid-template-columns: 0 1fr; }
 /* 设置模式：隐藏左侧会话栏（设置中心有自己的左导航），但**保留顶栏**。
    ★ 为什么必须保留顶栏：顶栏右侧是窗口的 最小化/最大化/关闭 三个按钮，
-   隐藏它等于把窗口关不掉 —— 用户实测「打开设置后右上角按钮消失了」。
+   隐藏它等于把窗口关不掉 —— 实测「打开设置后右上角按钮消失了」。
    内容区高度由 flex 自然分配（原来是 height:100vh，那是配合隐藏顶栏写的）。 */
 #app.settings-mode { grid-template-columns: 1fr; }
 #app.settings-mode > #sidebar { display: none; }
@@ -545,7 +545,7 @@ body.resizing-x, body.resizing-x * { cursor: ew-resize !important; }
 #statusbar .sb-item b { color: var(--text-soft); font-weight: 620; font-variant-numeric: tabular-nums; }
 /* ★ 两组指标连着排，中间只留一个窄间隔：
    旧写法 .spacer{flex:1} 会把左右两组推到状态栏两端，窗口一宽中间就空出一大片
-   （用户反馈）。改成固定窄间距后，指标从左到右连排。 */
+   （实测）。改成固定窄间距后，指标从左到右连排。 */
 #statusbar .spacer { flex: none; width: 14px; }
 #sb-left, #sb-right { display: inline-flex; align-items: center; min-width: 0; }
 /* 粘贴提示（并入底部状态栏末尾，见 #sb-paste）。
@@ -685,7 +685,7 @@ body.resizing-x, body.resizing-x * { cursor: ew-resize !important; }
 #msg-nav:hover { background: var(--bg-elev); box-shadow: var(--shadow); }
 /* 回到底部：悬浮在输入卡片「正上方、水平居中」。
    为什么改居中：原先 right:22px 贴在右侧，与卡片（居中 900px）错位，
-   看起来像右栏的一部分。用户要求「放到对话框正上方」。 */
+   看起来像右栏的一部分。「放到对话框正上方」。 */
 .jump-bottom {
   position: absolute; left: 50%; transform: translateX(-50%);
   bottom: calc(var(--composer-block-h, 120px) + 10px);
@@ -901,7 +901,7 @@ td.mono, th.mono { font-family: "SF Mono", Consolas, monospace; font-size: calc(
 /* ============ 对话页 ============ */
 /* ★ #chat-page 恒为 grid，不再靠 .active 切换 display。
    原因：display 不可过渡 —— 从设置页切回对话时，浏览器有一帧还没应用
-   .active 的 display，整块对话区闪一下白（用户反馈「页面切换很生硬」）。
+   .active 的 display，整块对话区闪一下白（实测「页面切换很生硬」）。
    外层 .page 的显示/隐藏由 #page-chat 控制即可。 */
 #chat-page { display: grid; grid-template-rows: 1fr auto; height: 100%; padding: 0; position: relative; }
 /* 底部留白 = 悬浮输入区整块高度。
@@ -1020,7 +1020,7 @@ td.mono, th.mono { font-family: "SF Mono", Consolas, monospace; font-size: calc(
 .reasoning .rdur {
   color: var(--text-faint); font-variant-numeric: tabular-nums;
   /* ★ 固定宽度：秒数会从 "9.9s" 变成 "1m00s"、再变 "10m0s"，长度不一样。
-     不给固定宽，标题行会被挤到换行、下一帧又变回来 —— 连续上下抽动（用户实测）。
+     不给固定宽，标题行会被挤到换行、下一帧又变回来 —— 连续上下抽动（实测）。
      3.6em 足够容纳 "1m00s"，各档位占同样宽，永远不换行。 */
   min-width: 3.6em; display: inline-block; flex: none;
 }
@@ -1117,7 +1117,7 @@ td.mono, th.mono { font-family: "SF Mono", Consolas, monospace; font-size: calc(
 }
 .files-made .fm-btn:hover { color: var(--accent); border-color: var(--accent); }
 
-/* ---- 正文里的可点路径（用户要求：回答里的路径要能点开）----
+/* ---- 正文里的可点路径（回答里的路径要能点开）----
    虚线底 + 等宽字体，看起来「可点」但不喧宾夺主。 */
 .path-link {
   font-family: "SF Mono", Consolas, monospace;
@@ -1187,22 +1187,22 @@ td.mono, th.mono { font-family: "SF Mono", Consolas, monospace; font-size: calc(
 /* 卡片占满 .composer-inner 的高度。
    ★ 为什么必须这样：拖拽只改 --composer-h，而卡片若由内容撑高（旧写法），
      外层变高、卡片却纹丝不动 —— 视觉上就是「拖动变成整块上移、卡片没变高」
-     （用户实测）。让卡片 flex:1 撑满，拖多高卡片就多高。 */
+     （实测）。让卡片 flex:1 撑满，拖多高卡片就多高。 */
 #input-box { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 #input-box #input { flex: 1 1 auto; max-height: none; }
 /* 卡片左上角的流式速度：只有真的在跑（t/s > 0）时才显形，
    避免空闲时挂一行「0.0 t/s」占位。 */
 /* 卡片左上角的流式速度：只有真的在跑（t/s > 0）时才显形，
    避免空闲时挂一行「0.0 t/s」占位。
-   位置在卡片「内部」左上（用户要求：跟下面的 +号、工作区可改、自动同一排风格），
+   位置在卡片「内部」左上（跟下面的 +号、工作区可改、自动同一排风格），
    不再飘在卡片外面的上方 —— 那样会和拖拽手柄抢位置、看着像浮在框外。 */
 /* 输入卡片**上方**的状态行：应用标记 + 状态短词 + 吞吐 ······（右侧留白）。
    ★ 为什么放上方：原先 t/s 是 `height:0; overflow:visible` 悬在 textarea 之上，
-   必然压住「说点什么…」提示文字（用户反馈）。放上方后各占各的位置。
+   必然压住「说点什么…」提示文字（实测）。放上方后各占各的位置。
    ★ 颜色用 --text-soft：与下面「+号 / 工作区可改 / 自动」那几个 chip 同一档，
-   不再用强调色（用户反馈「多少 t/s 那行是红字，太突兀」）。
+   不再用强调色（实测「多少 t/s 那行是红字，太突兀」）。
    ★ 排列顺序是 logo → 状态词 → 吞吐，**spacer 放在最后**：
-   这样状态词变长时，吞吐会**跟着一起往右移**（用户要求的），
+   这样状态词变长时，吞吐会**跟着一起往右移**（的），
    而不是被中间的空隙留在原地不动。 */
 .composer-status {
   display: flex; align-items: center; gap: 8px;
@@ -1212,7 +1212,7 @@ td.mono, th.mono { font-family: "SF Mono", Consolas, monospace; font-size: calc(
   pointer-events: none; white-space: nowrap; overflow: hidden;
 }
 .composer-status .spacer { flex: 1 1 auto; min-width: 0; }
-/* ★ logo 比原来大一点（用户要求）：14px → 18px */
+/* ★ logo 比原来大一点：14px → 18px */
 .cs-logo { display: inline-flex; width: 18px; height: 18px; flex: none; opacity: .85; }
 .cs-logo svg { display: block; width: 18px; height: 18px; }
 .cs-text { flex: none; }
@@ -1236,7 +1236,7 @@ td.mono, th.mono { font-family: "SF Mono", Consolas, monospace; font-size: calc(
 /* 高度手柄：贴在卡片顶边「上方」，整块都不与卡片重叠。
    ★ 命中带刻意收窄到 6px、并离开卡片 3px：
      旧写法 10px 高、压在卡片上方 4px 处，鼠标要放得「偏上」才碰到它，
-     而卡片边缘附近反而是它在响应 —— 用户反馈「指针变了却像没反应」。
+     而卡片边缘附近反而是它在响应 —— 「指针变了却像没反应」。
      现在窄带只负责高度；卡片边缘扩展到宽度由右下角手柄负责。 */
 .composer-resize {
   height: 6px; position: absolute; left: 24px; right: 24px; top: -9px;
@@ -1297,7 +1297,7 @@ body.resizing #infopanel { transition: none; }
 /* 输入卡片：圆角 + 浅描边 + 柔和阴影，自成一块浮在消息上的面。
    为什么不加 backdrop-filter：卡片是 812px 宽的横条，对它做背景模糊会在
    卡片四周连带糊出一片，在图片主题下看起来像一条脏带、与背景明显割裂
-   （用户反馈「对话框四周是模糊的，跟背景不一样，好丑」）。
+   （实测「对话框四周是模糊的，跟背景不一样，好丑」）。
    用不透明一点的纯色底 + 阴影来表达「浮起」就够了。 */
 #input-box {
   border: 1px solid var(--border); border-radius: 18px;
@@ -1688,7 +1688,7 @@ pre.block {
 }
 
 /* ==========================================================================
-   界面动画：让切换/出现更柔和（用户反馈"太生硬"）
+   界面动画：让切换/出现更柔和（实测"太生硬"）
    ========================================================================== */
 @keyframes fc-fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes fc-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }

@@ -329,7 +329,7 @@ function ensureAnime() {
 }
 
 /* 动效总闸：尊重 --zh-weight 同级的「界面动画」偏好。
-   注意这里是**读**而不是写：设置里的开关已按用户要求移除，
+   注意这里是**读**而不是写：设置里的开关已按移除，
    但保留 html.no-anim 这条通道，便于以后需要时一键关掉。 */
 function animOn() {
   try {
@@ -439,11 +439,11 @@ async function renderRich(root) {
       }
     }
   }
-  // ---- 正文里的文件路径变成可点（用户要求：输出里的路径要能点开） ----
+  // ---- 正文里的文件路径变成可点（输出里的路径要能点开） ----
   try { linkifyPaths(box); } catch (e) {}
 }
 
-/* ★ 把正文里的文件路径渲染成可点链接（用户实测：回答里的路径只能看不能点）。
+/* ★ 把正文里的文件路径渲染成可点链接（实测：回答里的路径只能看不能点）。
    识别两种形式：Windows 盘符路径（X:\... 或 X:/...）与 Unix 绝对路径（/xxx/...）。
    已有的工具卡「打开位置」是针对已知产出文件的；正文里的路径是模型自由写出来的，
    两条路径互不覆盖。
@@ -643,7 +643,7 @@ function applyImageTheme(spec) {
 
 /** 根据"是否已有对话内容"决定背景图是清晰还是变淡 */
 /** 根据"是否已有对话内容 / 是否正在生成"决定背景图是清晰还是变淡。
- *  用户要求：不发消息时高清显示；发消息开始工作后就模糊一点。 */
+ *  需求：不发消息时高清显示；发消息开始工作后就模糊一点。 */
 function syncImageThemeDim() {
   // 打开设置：背景图糊成色斑（只留主题色调），这时不需要「变淡」遮罩
   document.body.classList.toggle("settings-open", S.page === "settings");
@@ -1246,7 +1246,7 @@ async function openSetting(id) {
   ssHost._movedKids = kids;
 }
 
-/** 通用设置（「左标题右控件」的排布） */
+/** 通用设置（左标题右控件」的排布） */
 async function renderGeneralSettings(body) {
   let boot = S.boot;
   if (!boot) { try { boot = S.boot = await api("/api/bootstrap"); } catch (e) {} }
@@ -1382,7 +1382,7 @@ async function renderGeneralSettings(body) {
 
   // 立刻生效的本地项
   // ★ 「显示本轮用量 / 信息面板 / 显示思考过程 / 界面动画」这类开关已从设置里移除：
-  //   它们不是用户的「选择」，而是界面的固有部分（用户明确要求「默认强制开启，
+  //   它们不是用户的「选择」，而是界面的固有部分（要求「默认强制开启，
   //   不要放在设置里让选，太臃肿」）。行为固定为：全都开。
   const gdp = $("#g-default-perm");
   if (gdp) gdp.onchange = () => { ui.default_permission = gdp.value; ui.default_readonly = gdp.value === "deny"; try { localStorage.setItem("fengcode_default_permission", gdp.value); } catch (e) {} saveUiQuiet(ui); };
@@ -1552,7 +1552,7 @@ async function openSessionTrash() {
 
 /* 命中率显示：**不要四舍五入成 100%**。
    实测用户实例上游返回 cached=34816 / prompt=34904（99.7%），前缀缓存确实生效；
-   但显示成「100%」会让人以为数字是编的（用户反馈「命中率变成百分百，这不可能」）。
+   但显示成「100%」会让人以为数字是编的（实测「命中率变成百分百，这不可能」）。
    规则：保留一位小数；只有当它**真的是 100** 时才显示 100。 */
 function hitRatePct(hit, tot) {
   const t = Number(tot) || 0;
@@ -1579,7 +1579,7 @@ async function renderInfoPanel() {
   const u = S.turnUsage || {};
   const all = (stats && stats.all) || {};
   // 「累计 tokens / 请求数 / 费用」按当前口径应该是本会话的：优先用后端返回的
-  // session 维度，没有再退回全库。避免用户以为那是这个会话的数字。
+  // session 维度，没有再退回全库。避免容易以为那是这个会话的数字。
   const sess = (stats && stats.session) || all;
 
   // 上下文档位（本轮最后一次调用的 prompt 占模型上限的比例）
@@ -1610,7 +1610,7 @@ async function renderInfoPanel() {
     <div class="ip-card">
       <h4>命中率<span class="hint">越高越省钱</span></h4>
       ${(() => {
-        // ★ 命中率口径必须跟着会话走（用户实测「上下文卡 0 的时候命中率显示
+        // ★ 命中率口径必须跟着会话走（实测「上下文卡 0 的时候命中率显示
         //   4.77M，AI 输出之后才变回正常」）。
         //   根因：本会话没有数据时**回退到全库聚合** —— 那个 4.77M 是所有历史
         //   会话混在一起的累计值，跟当前会话毫无关系；上下文明明是 0，旁边却
@@ -1723,7 +1723,7 @@ function renderStatusBar() {
   const state = S.streaming ? "运行中" : "就绪";
   // 上下文读数统一走 fmtNum（全站唯一的 K/M 缩写入口）。
   // ★ 旧写法这里另有一个本地 kw 函数做四舍五入，与信息面板的 fmtNum 不一致 ——
-  //   同一屏里会出现「44800」和「44.8K」两种写法（用户实测反馈「数字看着乱」）。
+  //   同一屏里会出现「44800」和「44.8K」两种写法（实测反馈「数字看着乱」）。
   const pctUsed = S.contextLimit > 0 ? Math.round((prompt / S.contextLimit) * 100) : 0;
   // 未设置上限（无限上下文）时不显示百分比，只显示绝对值
   const ctxText = S.contextLimit > 0
@@ -1770,7 +1770,7 @@ function paintComposerStatus(speed) {
   if (!logo.dataset.inited) { logo.innerHTML = logoSvg(18, true); logo.dataset.inited = "1"; }
   const phase = S.streaming ? "busy" : (S._phase || "idle");
   logo.classList.toggle("busy", phase === "busy");
-  // ★ 静默过久时不再只写「运行中」——用户实测过「看起来一直没做完」，
+  // ★ 静默过久时不再只写「运行中」——实测过「看起来一直没做完」，
   //   分不清到底是在跑还是断了。这里把「已多少秒没新输出」直接写出来。
   const silent = phase === "busy" && S.lastEventAt ? (Date.now() - S.lastEventAt) / 1000 : 0;
   if (phase === "busy" && silent > 45) {
@@ -2043,7 +2043,7 @@ function turnAnchorOf(wrap) {
 /** 找**本轮**已产生的最后一个 wrap（同一轮锚点之后、下一个 user 消息之前）。
     ★ 用途：result 到达时若 c.assist 已被 tool.start 封存，需要新建一个气泡承载
       定稿文字 —— 它必须落回本轮时间线的收尾位置，而不是被 append 到整段对话末尾。
-      （用户实测「最终文字跑到最上面 / 掉到工具卡后面，重启才回下面」。）
+      （实测「最终文字跑到最上面 / 掉到工具卡后面，重启才回下面」。）
     轮次锚点从「对话里最后一个 user 消息」倒推：本轮就是它之后的所有节点。
     找不到 user 消息时退回「对话里最后一个 wrap」。 */
 function lastTurnWrap(c) {
@@ -2129,7 +2129,7 @@ function scrollDown(force) {
 /** ★ 由「用户明确操作」维护是否跟随，而不是靠「内容增长后的距底距离」反推。
     为什么必须这样：流式期间内容每 50ms 就增长一次，每次增长都会把视图拉到底。
     用户想上滑看早前内容时，刚滚上去一点（还没超过 180px 的判定阈值）就被下一次
-    增长拽回底部 —— 表现就是「滚轮抽搐、怎么滚都滚不上去」（用户实测反馈）。
+    增长拽回底部 —— 表现就是「滚轮抽搐、怎么滚都滚不上去」（实测）。
     现在：一旦检测到用户主动向上滚/按上方向键，立刻停止跟随；滚回底部才恢复。 */
 function watchUserScroll() {
   const m = msgBox();
@@ -2153,7 +2153,7 @@ function updateJumpBottom() {
   else FOLLOW_TAIL = true;
   // ★ 「回到底部」也要在**思考区**里出现：
   //   用户展开思考、上滑看早前内容时，外层消息区可能仍在底部，
-  //   只按外层判断按钮就不会出现（用户反馈「回到底部在思考页面用不了」）。
+  //   只按外层判断按钮就不会出现（实测「回到底部在思考页面用不了」）。
   //   只要任一个已展开的思考块离开了底部，就显示按钮。
   let rcAway = false;
   try {
@@ -2251,7 +2251,7 @@ async function newSession() {
     paintPermChip();
     clearMessages();
     emptyState();
-    // ★ 新会话的上下文占用必须归零（用户实测「说完话切换新对话，上下文占用
+    // ★ 新会话的上下文占用必须归零（实测「说完话切换新对话，上下文占用
     //   还是老对话的几十 K，重启才变成 0K」）。新建的会话没有任何历史，
     //   用量就该是 0；不显式复位就会沿用上一个会话的读数。
     applySessionUsage({ input_tokens: 0, output_tokens: 0, cost: 0 });
@@ -2280,7 +2280,7 @@ async function openSession(sid) {
 }
 
 /* ---------------- 输入草稿：每个会话各留一份 ----------------
-   为什么按会话存：用户要求「切换对话时按会话分别保留草稿」——
+   为什么按会话存：「切换对话时按会话分别保留草稿」——
    在 A 会话打了一半的字，切到 B 再切回 A 时应当还在，
    而不是被清空、也不是串到 B 的输入框里。
    存在内存 Map 里（会话切换是高频操作，不必落盘）；
@@ -2423,7 +2423,7 @@ async function loadSession(sid) {
     S.sessionId = sid;
     if (d.session && d.session.model) S.model = d.session.model;
     if (d.session && d.session.workspace) S.workspace = d.session.workspace;
-    // ★ 上下文占用必须跟着会话走（用户实测「切新对话还显示旧对话的几十 K、
+    // ★ 上下文占用必须跟着会话走（实测「切新对话还显示旧对话的几十 K、
     //   重启才归零；换回来又没效果」）。
     //   旧实现只换 sessionId 与消息，从不碰 S.turnUsage —— 而状态行读数就取自它，
     //   于是新会话沿用上一个会话的占用、切回来也不会恢复本会话的占用。
@@ -2440,7 +2440,7 @@ async function loadSession(sid) {
 
 /** 按会话记录设置「上下文占用」读数。
     ★ 为什么要单独一个函数：新建会话、载入会话、换模型三条路径都要刷新它，
-      散着写必然漏（用户实测的「不独立 / 换了没效果 / 重启才对」就是这么来的）。
+      散着写必然漏（实测的「不独立 / 换了没效果 / 重启才对」就是这么来的）。
     后端按会话独立存 input_tokens：有就按它显示，没有就归零。 */
 function applySessionUsage(sess) {
   const used = Number((sess && sess.input_tokens) || 0);
@@ -2592,7 +2592,7 @@ function updateToolCard(name, data, done) {
   S.toolNodes.delete(name);
 }
 
-/** 回合结束时把「本回合生成的文件」明确列出来（★ 用户实测：AI 说写好了，
+/** 回合结束时把「本回合生成的文件」明确列出来（★ 实测：AI 说写好了，
     用户去桌面找不到 —— 因为文件其实在工作区 `fengcode-data\workspace`）。
     给真实完整路径 + 「打开位置」按钮，让文件变得可找。 */
 function renderTurnFiles(files) {  const list = (files || []).filter(Boolean);
@@ -2627,7 +2627,7 @@ function renderTurnFiles(files) {  const list = (files || []).filter(Boolean);
 }
 
 /** 回合结束时渲染「完成回执卡」。
-    ★ 为什么要它（用户实测痛点）：一轮做完，用户看不出「到底改了哪些文件、
+    ★ 为什么要它（实测痛点）：一轮做完，用户看不出「到底改了哪些文件、
       验证没验证、还有没有没做完的」，只能从正文里那句「我做好了」去猜。
     数据全部来自后端本回合的真实执行记录（TurnResult 的 changed_files /
     verify_commands / gaps），**不是模型自述** —— 所以它比正文可信。
@@ -2681,7 +2681,7 @@ function renderReceipt(data, afterWrap) {
   scrollDown();
 }
 
-/* ---- 待办清单面板（用户要求的「拉待办任务」能力）----
+/* ---- 待办清单面板（的「拉待办任务」能力）----
    AI 用 `todo` 工具排计划时，后端每题都会 emit `task.update`。
    旧版本前端只在 WebSocket 分支里顺手点个徽标就扔了，**清单本身从不显示**；
    SSE 的 handleEvent 里连 case 都没有 —— 用户完全看不见 AI 的计划。
@@ -2699,7 +2699,7 @@ async function refreshTodos() {
   } catch (e) { /* 面板是辅助信息，拉不到就不显示 */ }
 }
 /* ★ 待办刷新要「跟着回合走」，不能只在 task.update 事件里刷一次。
-   用户实测「待办进度卡在第一步不刷新」的成因有两半：
+   实测「待办进度卡在第一步不刷新」的成因有两半：
      后端：只有动过文件才算实质进展，只更新计划时不注入收尾自检；
      前端：事件丢了/晚到时面板就停住。
    这里补一条兜底：回合结束（result）后再拉一次，保证面板与库一致。 */
@@ -2795,7 +2795,7 @@ async function send() {
     S.turnElapsed = (Date.now() - t0) / 1000;
     // 每秒推一次样本；没有新内容时不产生新读数（见 pushSpeedSample）
     pushSpeedSample();
-    // 思考时长：实时刷新当前思考块的秒数（「思考过程 3.2s 451字」里的那个 3.2s）
+    // 思考时长：实时刷新当前思考块的秒数（思考过程 3.2s 451字」里的那个 3.2s）
     try {
       const rb = streamContext.reasoningBox;
       // ★ 只在「这段思考尚未结束」时刷新。rtStopped 由 done 事件（一段输出结束）
@@ -2807,7 +2807,7 @@ async function send() {
       }
     } catch (e) {}
     // ★ 看门狗：区分「仍在跑」和「真卡死」，别让界面骗人。
-    //   用户实测过「看起来一直没做完」：上游思考很久、一个事件都不发，
+    //   实测过「看起来一直没做完」：上游思考很久、一个事件都不发，
     //   界面却仍写着「生成中」，无法判断到底是在跑还是断了。
     const silent = (Date.now() - (S.lastEventAt || t0)) / 1000;
     if (silent > 45 && silent <= 300) {
@@ -2845,7 +2845,7 @@ async function send() {
     turnFiles: [],   // 本回合工具产出的真实文件路径（收尾时提示「文件已生成在 X」）
   };
   // ★ 这条流「声明归属」的会话：本轮请求发出的那个会话 id。
-  //   必须在发请求时冻结下来，之后**不随 S.sessionId 变化** —— 用户实测
+  //   必须在发请求时冻结下来，之后**不随 S.sessionId 变化** —— 实测
   //   「老对话跑任务时打开新对话，老对话的输出与实时思考串进新对话」，
   //   根因就是事件处理只看当前 DOM、不看归属。冻结后即可逐条比对丢弃。
   const streamOwnerSid = S.sessionId || "";
@@ -2894,7 +2894,7 @@ async function send() {
       if (!line.trim()) return;
       try {
         const ev = JSON.parse(line);
-        // ★ 会话归属校验（用户实测「老对话跑任务时打开新对话，老对话的输出与
+        // ★ 会话归属校验（实测「老对话跑任务时打开新对话，老对话的输出与
         //   实时思考串进新对话」）。
         //   根因：切会话时这条流并没有被中止，而事件处理只看 DOM、不看归属 ——
         //   于是老会话的事件继续往**新会话的界面**里写。
@@ -2984,7 +2984,7 @@ async function send() {
     syncImageThemeDim();   // 回合结束：若已有对话内容则保持模糊态
       // ★ 收尾兜底：把最终交付文字从会话记录追回来，并把仍写着「生成中」的气泡复位。
       //   触发条件：**定稿文字确实没渲染到界面上** 才补。
-      //   历史坑（用户实测「发你好输出两次、重启才变一次」）：
+      //   历史坑（实测「发你好输出两次、重启才变一次」）：
       //   旧条件写成 `!streamDone || !_finalRendered`，是「或」——result 已到、文字已渲染时，
       //   只要 _finalRendered 因任何原因没置位（自动重试重建气泡、tool.start 封存 assist、
       //   result 的 content 为空但界面已由 text 事件写出正文）就会再补一遍，
@@ -2996,7 +2996,7 @@ async function send() {
     finalizeTurnBubbles({ gotResult: streamDone, cancelled: S._cancelled });
     // ★ 明确告诉用户「文件生成在哪」：AI 写的文件默认落在工作区
     //   （fengcode-data\workspace），不是桌面。旧界面只显示 `~/xxx`，
-    //   用户以为在用户目录，去桌面白找一场。
+    //   容易以为在用户目录，去桌面白找一场。
     try { renderTurnFiles(streamContext.turnFiles); } catch (e) {}
     // 状态行显示「已完成」（空闲时仍是「空闲」）
     S._phase = "done";
@@ -3006,7 +3006,7 @@ async function send() {
     if ((S.queue || []).length) setTimeout(() => dispatchNextQueued(), 150);
   }
 }
-/* ---- 回合收尾的统一兜底（★ 用户实测「已完成但左边还写着生成中、且没有收尾文字」）----
+/* ---- 回合收尾的统一兜底（★ 实测「已完成但左边还写着生成中、且没有收尾文字」）----
    背景：AI 气泡的 meta 只在 handleEvent 的 result 分支里被改写。而 result 事件
    会因为①用户点停止（前端 abort，连接已断）②中转/代理掐掉长连接 —— 而**没有送达**。
    这时状态行（S._phase="done"）显示「已完成」，但气泡还停在「生成中」，看起来像没结束。 */
@@ -3042,9 +3042,9 @@ function lastAssistNode() {
 
 /** 断流兜底：没收到 result 时，从服务端把本回合的最终交付文字追回来。
     ★ 后端 agent 跑完一定会把最终 assistant 消息写库（core/agent.py 收尾段）。
-      前端缺 result 时界面就只有半截、甚至空白 —— 用户实测「他做完了却没有输出
+      前端缺 result 时界面就只有半截、甚至空白 —— 实测「他做完了却没有输出
       收尾文字，我还以为一直没做完」。这里按会话记录补上。
-    ★ 去重（用户实测「发你好输出两次、重启才变一次」三道闸）：
+    ★ 去重（实测「发你好输出两次、重启才变一次」三道闸）：
       ①本轮只要出现过任何正文（c._sawAssistantText）→ 不补；
       ②本轮已补过（c._recovered）→ 不补；
       ③界面上已有这段文字（textAlreadyShown）→ 不补。 */
@@ -3070,7 +3070,7 @@ async function recoverFinalText(c) {
 }
 
 /** 这段文字是否已经显示在界面上？
-    ★ 判据（用户实测「同一段话出现两三遍」踩出来的，改了四轮才定位到真因）：
+    ★ 判据（实测「同一段话出现两三遍」踩出来的，改了四轮才定位到真因）：
       真因是**拿库里的原始 Markdown 去比对 DOM 渲染后的纯文本**：
       `md()` 会把 `**粗体**`、`\\`code\\``、表格管道符、`#` 标题、`- ` 列表标记
       全部转换成标签或删掉，于是「原文前 12 字符」在 textContent 里根本不存在，
@@ -3111,7 +3111,7 @@ function attHtml() {
   return `<div class="u-atts">${items}</div>`;
 }
 /* 给当前这段思考「停表」并把标题从「思考中…」改成「思考过程」。
-   ★ 什么时候才能停表（用户实测「思考时间一直是 0 秒」后重新定的规则）：
+   ★ 什么时候才能停表（实测「思考时间一直是 0 秒」后重新定的规则）：
      只有**这一轮思考真的结束**才停，即出现下面任一件事：
        · 开始输出正文（text）
        · 开始生成工具参数（tool_delta / tool.start）
@@ -3138,11 +3138,11 @@ function handleEvent(ev, c) {
   switch (ev.type) {
     case "text": {
       // ★ 已开始输出正文 → 这段思考结束，计时停表（不然正文都在打字了，
-      //   上面的「思考 3.2s」还在往上跳 —— 用户实测反馈）。
+      //   上面的「思考 3.2s」还在往上跳 —— 实测反馈）。
       markReasoningDone(c);
       // ★ 记下「本轮已出现过助手正文」：收尾兜底据此判断要不要从会话记录补写。
       //   只要流式期间写过正文，就绝不补 —— 否则同一段文字会在同一屏出现两次
-      //   （用户实测「发你好输出两次、重启才变一次」）。
+      //   （实测「发你好输出两次、重启才变一次」）。
       if ((d.text || "").trim()) c._sawAssistantText = true;
       if (!c.assist) {
         // 复用占位气泡（"正在回复…"），避免出现两条空 AI 气泡
@@ -3164,11 +3164,11 @@ function handleEvent(ev, c) {
       break;
     }
     case "reasoning": {
-      // ★ 思考过程固定显示（「显示思考过程」开关已从设置里移除）
+      // ★ 思考过程固定显示（显示思考过程」开关已从设置里移除）
       // 判断依据必须是「DOM 里是否还有这个框」，不能只看 c.reasoning 是否为 null。
       // 旧写法只在 !c.reasoning 时新建，而回合中工具调用会把 reasoningBox 挪走并把
       // 引用置空、却漏了 c.reasoning —— 于是后续思考继续写进那个已被挪走的旧框，
-      // 一个回合就碎成十几个「思考过程」块（用户实测见 17 个）。
+      // 一个回合就碎成十几个「思考过程」块（实测见 17 个）。
       if (!c.reasoning || !c.reasoning.isConnected) {
         c.rtext = d.text || "";   // 新一段思考：文本从头累积，不接上一段的尾巴
         c.rt0 = Date.now();       // 这一块思考的开始时间（用于实时显示思考时长）
@@ -3190,7 +3190,7 @@ function handleEvent(ev, c) {
       // ★ 跟随逻辑必须由「用户是否滚动过」决定，不能用「距底距离」即时判断。
       //   旧写法每次内容增长后算 scrollHeight - scrollTop - clientHeight < 48：
       //   用户明明停在底部，但新内容一加进来距底就超过 48px，于是被判成
-      //   「已上滑」，再也不跟随 —— 正是用户反馈的「滑到最底还是不跟」。
+      //   「已上滑」，再也不跟随 —— 正是反馈的「滑到最底还是不跟」。
       //   现在由 scroll 事件维护 rc._followTail（见下方全局委托），
       //   内容增长时只看这个标志。
       const det0 = c.reasoningBox && c.reasoningBox.querySelector("details");
@@ -3208,7 +3208,7 @@ function handleEvent(ev, c) {
       c.finish = ev.finish_reason || d.finish_reason || "stop";
       // 一段输出（思考或正文）结束：推一次计速样本
       pushSpeedSample();
-      // ★ 不再在这里给思考计时「定格」（用户实测「思考时间一直是 0 秒」）。
+      // ★ 不再在这里给思考计时「定格」（实测「思考时间一直是 0 秒」）。
       //   为什么：`done` 是**每段输出结束**都会发的事件 —— 模型分多段吐思考时，
       //   第一段一结束就把计时停住，秒数永远停在 0.x 上，看起来像没在计时。
       //   现在只在**整轮思考真正结束**时定格，判据见 markReasoningDone()：
@@ -3223,12 +3223,12 @@ function handleEvent(ev, c) {
     // ★ 工具参数增量：模型在流式生成 write_file 的长参数（文件内容）时，
     //   后端持续发 tool_delta，但前端此前**没有这个 case**，直接丢弃 ——
     //   于是这十几秒界面毫无动静，直到 tool.start 才突然冒出卡片。
-    //   用户实测：「思考完成后等了 10 几秒才出现 write_file 提示」。
+    //   实测：「思考完成后等了 10 几秒才出现 write_file 提示」。
     //   这里给一个就地占位，让用户看到「正在生成参数」。
     case "tool_delta": {
       // ★ 工具参数一开始生成，本段思考就已经结束了 —— 立刻停表。
       //   否则「思考完成」到 write_file 卡片弹出这段（十几秒）里，
-      //   思考时长还在每秒往上跳，看起来像还在思考（用户实测反馈）。
+      //   思考时长还在每秒往上跳，看起来像还在思考（实测）。
       markReasoningDone(c);
       const tname = (ev.meta && ev.meta.name) || d.name || "工具";
       let ph = $("#tooldelta");
@@ -3266,7 +3266,7 @@ function handleEvent(ev, c) {
       //   它只是「我准备调用工具」的前言，真正的交付内容是工具链**之后**那一轮正文。
       //   旧实现不标记，收尾兜底与重开会话时它会被当成交付内容，导致
       //   ①同一轮界面上出现两段（前言 + 结论）；②重启后只剩库里的结论那段
-      //   ——正是用户实测「发你好输出两次、重启才变一次」的机理。
+      //   ——正是实测「发你好输出两次、重启才变一次」的机理。
       if (c.assist || (c.buf && c.buf.trim())) {
         c.finishTextSegment = true;
         try {
@@ -3304,7 +3304,7 @@ function handleEvent(ev, c) {
         for (const f of d.files) if (f && !c.turnFiles.includes(f)) c.turnFiles.push(f);
       }
       // ★ 写文件类工具执行后刷新右侧文件树：否则删/改完文件，列表还是旧的，
-      //   必须手动点「刷新」才更新（用户实测反馈）。
+      //   必须手动点「刷新」才更新（实测）。
       //   只在文件树**当前可见**时刷新，避免白拉接口。
       try {
         if (IP_TAB === "files" && $("#infopanel") && $("#infopanel").classList.contains("open")) {
@@ -3325,7 +3325,7 @@ function handleEvent(ev, c) {
     }
     // ★ ask_user 工具：AI 主动提问 + 2~4 个候选，用户点一下即答。
     //   旧版本后端发了 ask.user 事件，但前端**没有对应 case**，
-    //   界面一片安静 —— 用户实测「fengcode 好像没有 ask 功能」。
+    //   界面一片安静 —— 实测「fengcode 好像没有 ask 功能」。
     case "ask.user": {
       showAsk(d);
       break;
@@ -3361,7 +3361,7 @@ function handleEvent(ev, c) {
       // last_usage = 最后一次上游调用的用量（上下文占用 / 命中率用它）；
       // usage = 本回合累加（费用、「本次 tokens」用它）。
       // ★ 为什么必须分开：一轮工具循环会把同一份上下文向上游重发十几次，
-      //   累加 prompt_tokens 就是把它重复计数 —— 用户实测界面 250K、上游 20K。
+      //   累加 prompt_tokens 就是把它重复计数 —— 实测界面 250K、上游 20K。
       const lu = d.last_usage || u;
       S.turnUsage = {
         total_tokens: u.total_tokens || 0,
@@ -3427,22 +3427,22 @@ function handleEvent(ev, c) {
       //   旧写法只在 c.assist 非空时回刷，而工具调用（tool.start）会把 c.assist
       //   置空并封存文字气泡 —— 如果模型最后一段是工具调用、之后不再产生 text 事件，
       //   交付文字就没有宿主可写，界面上直接消失（重启后从库里读才能看到）。
-      //   用户实测反馈的正是这个现象。
+      //   实测反馈的正是这个现象。
       //
-      //   ★ 顺位（用户实测「最终文字跑到最上面 / 掉到工具卡后面，重启才回下面」）：
+      //   ★ 顺位（实测「最终文字跑到最上面 / 掉到工具卡后面，重启才回下面」）：
       //   旧写法直接 addMessage(...) —— 那是无条件 append 到对话**最末尾**，
       //   于是定稿文字被排到本轮所有工具卡之后；而重开会话时 renderStored 按库序
       //   渲染，位置又变回正文该在的地方，表现为「重启才回下面」。
       //   这里改为：插入到**本轮最后一条消息之后**，保证它落回本轮时间线的收尾位置。
       //
-      //   ★ 重复（用户实测「同一段话出现两三遍」）：本条文字在流式期间已由 text 事件
+      //   ★ 重复（实测「同一段话出现两三遍」）：本条文字在流式期间已由 text 事件
       //   逐段写出，若这里再整段重绘、finally 再补一次，就会同屏三份。
       //   故先判断「界面是否已显示过这段文字」：已显示则只做收尾（改 meta、清 streaming），
       //   不再重绘正文。
       const finalText = (d.data && d.data.content) ? String(d.data.content) : "";
       // ★ 后端标记：这段正文在流式阶段已经逐字发给前端并渲染完成（agent.py 收尾段
       //   的 content_streamed）。此时**绝不能**整段重绘 —— 否则同一段回答出现两遍，
-      //   还常被 finally 的兜底再补一遍（用户实测「发你好输出两次、重启才变一次」）。
+      //   还常被 finally 的兜底再补一遍（实测「发你好输出两次、重启才变一次」）。
       //   但若界面上确实没有（例如自动重试重建了气泡），仍要补画，故两者取「且」。
       const streamedOk = !!(d.data && d.data.content_streamed) && textAlreadyShown(finalText);
       if (finalText && !streamedOk) {
@@ -3478,7 +3478,7 @@ function handleEvent(ev, c) {
         c.pending = null;
       }
       // ★ 回合结束兜底刷新待办面板：task.update 事件可能丢失/晚到，
-      //   不补这一次的话面板会停在上一步（用户实测「进度卡住不刷新」）。
+      //   不补这一次的话面板会停在上一步（实测「进度卡住不刷新」）。
       try { refreshTodosSoon(); } catch (e) {}
       const meta = c.assist && c.assist.closest(".msg").querySelector(".meta");
       if (meta && d.data) {
@@ -3643,7 +3643,7 @@ async function refreshFooter() {
    的窗口（实测反馈「切换模型后上下文还是之前那个」）。 */
 function onModelPicked() {
   applyContextLimit(S.boot);
-  // ★ 换模型时占用读数也要跟着刷新（用户实测「换模型后显示的是新模型的窗口，
+  // ★ 换模型时占用读数也要跟着刷新（实测「换模型后显示的是新模型的窗口，
   //   但占用数字还是旧的；再换回来又没效果」）。
   //   窗口上限由 applyContextLimit 负责；这里同步「本会话已用多少」——
   //   换模型不改变本会话的历史，但必须让读数按新模型的上限重新算百分比，
@@ -3867,7 +3867,7 @@ function openImagePreview(att) {
 }
 
 /* ---- 排队区：执行中发的指令列在这里，可取回 / 删除 / 插队立即发 ----
-   ★ 用户要求的三件事都在这里：
+   ★ 的三件事都在这里：
      · 取回：点「取回」把文本放回输入框（改完再发）；
      · 修改：点文本本身也是取回；
      · 立即强制发送：中断当前轮，把这条提到队首发出去。 */
@@ -3897,7 +3897,7 @@ function renderQueue() {
 }
 
 /** ★ 2-L：队列拖拽调序。
-    为什么需要：排队几条时顺序往往要调整（「这条先发」），
+    为什么需要：排队几条时顺序往往要调整（这条先发」），
     以前只能删掉重打 —— 上下拖一下就好的事。
     用 HTML5 drag 事件，拖到哪一条上就把自己插到那条的位置。 */
 let Q_DRAG_ID = "";
@@ -3978,7 +3978,7 @@ function dispatchNextQueued() {
   send();
 }
 
-/* ★ 待发队列持久化（用户实测「排 3 条指令，一刷新全没了」）。
+/* ★ 待发队列持久化（实测「排 3 条指令，一刷新全没了」）。
    做法：队列任何变化都同步落盘（增/删/取回/调序/出队），
    启动或切换会话时按会话读回来。存储在后端 KVStore，键按会话区分。 */
 async function syncQueue() {
@@ -4457,7 +4457,7 @@ async function loadMemoryPanel() {
       loadMemoryPanel();
     } catch (e) { toast("删除失败：" + e.message, "err"); }
   });
-  // ★ 修订历史 / 撤回（用户要求「记忆改了能回退，也看得清改过什么」）。
+  // ★ 修订历史 / 撤回（记忆改了能回退，也看得清改过什么」）。
   //   点「历史」就地展开该条的版本列表，右侧每条给「撤回」按钮。
   $$("[data-mhist]").forEach((b) => b.onclick = async () => {
     const mid = b.dataset.mhist;
@@ -4496,7 +4496,7 @@ async function loadMemoryPanel() {
 }
 
 /** ★ 1-G：把「写了却永远匹配不到」的权限规则提示出来。
-    静默失效的安全规则比没有规则更危险 —— 用户以为禁掉了，其实没有。
+    静默失效的安全规则比没有规则更危险 —— 容易以为禁掉了，其实没有。
     数据来自 /api/status 的 permission_warnings（后端 validate_rules 生成）。 */
 async function fillPermWarnings() {
   const boxes = $$("#perm-warn");
@@ -4785,7 +4785,7 @@ PAGES.mcp = async () => {
               : (live.status === "error" ? '<span class="tag err">失败</span>'
               : (live.status === "starting" ? '<span class="tag">连接中…</span>'
               /* ★ 1-L：stopped 不等于「坏了」——MCP 默认按需连接（用到才握手），
-                 旧文案写「未启动」会让用户以为 MCP 是故障的。 */
+                 旧文案写「未启动」会让容易以为 MCP 是故障的。 */
               : '<span class="tag">按需连接</span>'))}
               ${live.error ? `<div style="font-size:10.5px;color:var(--danger);margin-top:2px">${esc(String(live.error).slice(0, 80))}</div>` : ""}</td>
             <td class="mono">${live.tool_count || 0}</td>
@@ -5552,7 +5552,7 @@ PAGES.settings = async () => {
         <textarea id="a-extra" rows="4" placeholder="例如：回答尽量简短；代码用中文注释">${esc(agent.system_prompt_extra || "")}</textarea></div>
     </div>
     <!-- ★ 记忆面板。此前导航里有「记忆」入口，但 HTML 从未定义 #set-memory，
-         点击后走到 app.js 的「未找到「记忆」面板」分支（用户实测反馈）。
+         点击后走到 app.js 的「未找到「记忆」面板」分支（实测）。
          这里补齐面板本体，字段与 MemoryConfig 对应，保存走 saveSettingsNow 的 memory 段。 -->
     <div id="set-memory" class="set-pane" style="display:none">
       <div class="card"><h3>记忆总开关</h3>
@@ -6633,7 +6633,7 @@ function providerEdit(p, models) {
    初始化
    ========================================================================== */
 /* 由引导数据算出「当前模型的上下文上限」，供右侧栏与状态栏显示。
-   ★ 判定规则（对应用户诉求「各模型的上下文，用户设置的多少就显示多少」）：
+   ★ 判定规则（对应需求「各模型的上下文，用户设置的多少就显示多少」）：
      · 来源是 model（用户在模型服务页逐模型填的）→ 用他填的值，**一定按它显示**；
      · 来源是 provider / catalog → 用该值（供应商声明或内置能力表）；
      · 来源是 default（没人声明，用默认 1M）→ 也照实显示 1M，不再显示「未限制」；
@@ -7095,7 +7095,7 @@ async function applySlash(name) {
       case "/compact": runCompact(); return;
       case "/settings": case "/help": SS.current = "general"; go("settings"); return;
       default:
-        // ★ 未识别的斜杠命令**不吞**（用户实测：输入 /xxx 后毫无反应，
+        // ★ 未识别的斜杠命令**不吞**（实测：输入 /xxx 后毫无反应，
         //   以为程序坏了）。当普通消息发给模型，并明确告知「已按普通消息发送」。
         inp.value = name;
         inp.style.height = "auto";
@@ -7575,7 +7575,7 @@ function setupResizers() {
     let dragging = false, startY = 0, startH = 0;
     const MIN_H = 92, MAX_H = 420;   // 卡片高度下限/上限，避免拖成一条缝或占满整屏
     // 把「输入区整块高度」同步给 #messages 的底部留白，保证文字不会从
-    // 卡片左右空隙与卡片下方露出来（用户要求：到对话框以下直接全都看不到）。
+    // 卡片左右空隙与卡片下方露出来（到对话框以下直接全都看不到）。
     // 变量必须写在 #chat-page 上而不是 #composer 上：#messages 与 #composer
     // 是兄弟节点（index.html:62 / 65），CSS 变量只沿祖先链继承，写在 #composer
     // 上 #messages 读不到，padding-bottom 会落回 CSS 默认值。
@@ -7686,7 +7686,7 @@ function setupComposer() {
 
   inp.addEventListener("paste", (e) => {
     const text = e.clipboardData && e.clipboardData.getData("text/plain");
-    // ★ 提示并入底部状态栏末尾（用户要求：不要单独一条横条）。
+    // ★ 提示并入底部状态栏末尾（不要单独一条横条）。
     //   没有换行的短粘贴不提示，免得每粘一句话就闪一下。
     if (!text || !text.includes("\n")) return;
     const strip = $("#sb-paste");
@@ -7826,7 +7826,7 @@ $("#tool-clean").onclick = async () => {
 setupResizers();
 setupComposer();
 // 思考块（原生 <details>）展开时定位到最新输出，而不是停在最早那几行。
-// 用户要求：展开思考要能看到最新内容；同时把「点击展开 / 点击收起」文案跟着切换。
+// 需求：展开思考要能看到最新内容；同时把「点击展开 / 点击收起」文案跟着切换。
 document.addEventListener("toggle", (e) => {
   const det = e.target;
   if (!det || !det.classList || !det.classList.contains("reasoning")) return;

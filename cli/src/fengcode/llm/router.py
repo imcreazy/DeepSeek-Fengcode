@@ -114,7 +114,7 @@ def compute_cost(usage: Usage, price: dict[str, Any] | None, unit: int = 1_000_0
 
 
 def price_phase(price: dict[str, Any] | None, when: float | None = None) -> str:
-    """当前计价处于「峰」还是「谷」（，供界面显示标签）。
+    """当前计价处于「峰」还是「谷」（供界面显示标签）。
 
     没配谷价时返回空串 —— 不显示标签，避免给没启用峰谷的用户增加噪音。
     """
@@ -401,7 +401,7 @@ def model_choices() -> list[dict[str, Any]]:
     """列出所有可用模型（供界面下拉框使用）。
 
     ★ ``enabled`` 现在是**逐模型**的开关（存在 ``provider.model_overrides[m].enabled``），
-    不再只是供应商级。用户要求：在「模型服务」页勾选哪些模型可用，
+    不再只是供应商级。需求：在「模型服务」页勾选哪些模型可用，
     勾上的才进下拉框；未勾的保留在配置里但不参与路由。
     兼容：老配置里没有任何逐模型开关时，视为「供应商启用即全部启用」。
     """

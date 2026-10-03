@@ -475,7 +475,7 @@ class AppState:
         if self.plugins is not None:
             info["plugins"] = self.plugins.stats()
         # ★ 1-G：权限规则校验 —— 把「写了却永远匹配不到」的规则报给界面。
-        #   安全规则静默失效比没有规则更危险（用户以为禁掉了，其实没有）。
+        #   安全规则静默失效比没有规则更危险（禁掉了，其实没有）。
         try:
             from ..security.approval import validate_rules
 
@@ -722,7 +722,7 @@ async def api_providers(request: Any) -> Response:
         return _json({"ok": True, "enabled": prov.enabled})
     if action == "model_override":
         # 逐模型的「启用 / 上下文窗口 / 输出上限 / 支持图片」等覆盖设置。
-        # ★ 用户要求：模型前面有勾选框，勾上才启用；启用后可单独配置这几项；
+        # ★ 需求：模型前面有勾选框，勾上才启用；启用后可单独配置这几项；
         #   输入留空 = 不限制（交给上游），不要拿默认值冒充用户设置。
         name = str(body.get("name") or "")
         model = str(body.get("model") or "")
@@ -1595,7 +1595,7 @@ async def api_chat(request: Any) -> Response:
             except Exception as e:
                 # ★ 出错也必须补一个「回合结束」事件。
                 #   旧写法只发 error 就结束：前端收不到 result，流式气泡的 meta 会一直
-                #   停在「生成中」，而状态行却已显示「已完成」—— 用户实测的现象正是
+                #   停在「生成中」，而状态行却已显示「已完成」—— 实测的现象正是
                 #   「他先是已完成，但左边显示生成中，也没有输出文字」。
                 #   现在 error 之后补 result（带 error 字段），前端统一走收尾逻辑。
                 msg = f"{type(e).__name__}: {e}"
@@ -1782,7 +1782,7 @@ async def api_memories(request: Any) -> Response:
         return _json({"ok": mem.forget(str(body.get("id") or ""))})
     if action == "reindex":
         return _json({"ok": True, "count": mem.reindex_all()})
-    # ★ 记忆修订历史与撤回（用户要求「记忆改了能回退，也看得清改过什么」）
+    # ★ 记忆修订历史与撤回（记忆改了能回退，也看得清改过什么」）
     if action == "revisions":
         mid = str(body.get("id") or "")
         if not mid:
@@ -2357,7 +2357,7 @@ async def api_subagents(request: Any) -> Response:
 
 
 async def api_queue(request: Any) -> Response:
-    """待发队列的持久化（用户实测「排队指令一刷新就没了」）。
+    """待发队列的持久化（实测「排队指令一刷新就没了」）。
 
     ★ 为什么要有这个接口：排队只是前端内存里的数组，刷新/重开页面即丢。
       用户排了三条指令、手一抖刷新，三条全没了 —— 所以改成「先落盘再发」：

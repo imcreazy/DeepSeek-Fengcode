@@ -417,7 +417,7 @@ class BackgroundJobTool(Tool):
             dur = human_duration((job.get("ended") or time.time()) - job["started"])
             head = f"任务 {job_id}：[{job['status']}] 运行 {dur}，PID {job['pid']}"
             # ★ 1-M：静默 ≠ 卡死。没有新输出就说清楚「仍在运行、已静默多久」，
-            #   而不是让调用方/用户以为它挂了。
+            #   而不是让调用方/容易以为它挂了。
             if job["status"] == "running":
                 silent = time.time() - float(job.get("last_output_at") or job["started"])
                 if silent > 60:

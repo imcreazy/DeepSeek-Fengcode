@@ -578,7 +578,7 @@ class MemoryManager:
         allowed = {"title", "description", "content", "kind", "scope", "importance", "confidence",
                    "pinned", "archived", "tags", "source"}
         # ★ 改之前先快照旧值：这样「历史」里看到的就是「改之前长什么样」，
-        #   撤回时直接把它写回去（用户要求「记忆改了能回退」）。
+        #   撤回时直接把它写回去（记忆改了能回退」）。
         self._snapshot(mem_id, reason="update")
         sets, params = [], []
         for k, v in fields.items():

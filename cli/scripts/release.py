@@ -47,7 +47,7 @@ DRY = "--dry-run" in sys.argv
 IGNORE = {"fengcode-data", ".fengcode", "__pycache__", ".pytest_cache", ".git",
           "node_modules", "_ui_shots"}
 
-# ★★ 保险层（2026-10-03 用户要求「不要把测试实例和密钥文件打包上传」）
+# ★★ 保险层（2026-10-03 「不要把测试实例和密钥文件打包上传」）
 #   IGNORE 是「精确名」匹配，只能挡住名字完全一致的目录；而测试实例的目录名
 #   带后缀（.fengcode-dbg / .fengcode-exe / .fengcode-test…），精确匹配挡不住。
 #   这里补「前缀 / 后缀 / 扩展名」三类规则，与 push_github.py 的排除规则保持一致。
@@ -148,7 +148,7 @@ def build_assets() -> list[Path]:
 def _load_version_notes() -> str:
     """release 正文优先取「桌面\\每个版本更新\\v<版本>.md」。
 
-    ★ 用户要求：每次发版都要把详细改动写成文档，并让这份文档出现在 GitHub Release 上
+    ★ 需求：每次发版都要把详细改动写成文档，并让这份文档出现在 GitHub Release 上
     （每个版本都写清「重点 / 改进 / 修复」）。因此说明不再写死在脚本里，
     而是读桌面文档；读不到才退回下面的兜底模板。
     """

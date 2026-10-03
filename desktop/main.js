@@ -477,7 +477,7 @@ function createWindow() {
  *   · WebContentsView：Electron 33 的现行方案，能设独立 webPreferences，
  *     天然和主界面隔离（不同进程、不同存储分区）。
  *
- * ★ 安全边界（用户明确要求「http(s)、禁 file://、防越权」）：
+ * ★ 安全边界（要求「http(s)、禁 file://、防越权」）：
  *   1. 只允许 http/https —— file:// / javascript: / data: 一律拒绝导航；
  *   2. 独立 session 分区（persist:fengcode-browser），与主界面互不共享登录态；
  *   3. nodeIntegration=false + contextIsolation=true —— 网页拿不到 Node；
@@ -957,7 +957,7 @@ if (!gotLock) {
     // ★ 退出前一定要把窗口位置/尺寸写盘。
     //   旧版只在 resize/move 事件里保存；而「关窗口」默认是**隐藏到托盘**，
     //   用户真正退出往往走托盘菜单/快捷键，那条路径不触发 move，
-    //   于是窗口位置丢失 → 下次启动回到默认位置（用户反馈「每次都在左上角」）。
+    //   于是窗口位置丢失 → 下次启动回到默认位置（实测「每次都在左上角」）。
     saveWindowState();
     try { globalShortcut.unregisterAll(); } catch {}
     stopBackend();

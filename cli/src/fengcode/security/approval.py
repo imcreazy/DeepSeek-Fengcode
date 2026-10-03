@@ -167,7 +167,7 @@ class ApprovalGate:
         memory_key = self._memory_key(session_id, action, target)
         # ★ 改仓库状态的命令（git restore / reset / clean / stash drop…）**每次都问**：
         #   它们会丢弃工作区改动，不可逆；一旦被「本会话/始终允许」记住，
-        #   后面同类操作就再也不提示了（用户明确要求这类必须每次批准）。
+        #   后面同类操作就再也不提示了（这类必须每次批准）。
         if not force_ask:
             if memory_key in self._always_allows:
                 return True, "此前已选择始终允许", None
@@ -343,7 +343,7 @@ def validate_rules(rules: list[str] | None) -> list[str]:
     ★ 1-G：为什么必须校验 —— 规则写成裸命令名（如 ``deny: ["rm"]``）时，
       它在 `_match_rule` 里只会按「子串出现在目标或等于工具名」去比，
       对 `shell` 工具的 `rm -rf /` 这类命令**永远匹配不到**。
-      安全规则静默失效比没有规则更危险：用户以为自己禁掉了，其实没有。
+      安全规则静默失效比没有规则更危险：容易以为自己禁掉了，其实没有。
 
     判定为可疑的情形：
       · 裸词（无 ``:` 前缀、无通配符）且看起来像命令/路径 —— 极可能匹配不到；
@@ -354,7 +354,7 @@ def validate_rules(rules: list[str] | None) -> list[str]:
     known = {"tool", "action", "cmd", "command", "path", "file", "risk"}
     # ★ 可用的工具名（用于校验 `tool:` 前缀后的名字是否真实存在）。
     #   为什么必须查：规则写法看着对、工具名却是编的时，它永远匹配不到 ——
-    #   用户以为自己禁掉了某个工具，其实什么都没禁。安全规则**静默失效**
+    #   容易以为自己禁掉了某个工具，其实什么都没禁。安全规则**静默失效**
     #   比没有规则更危险（1.2.5 实测复现：`tool:zzz_not_a_tool` 此前静默通过）。
     #   取不到注册表时（如纯配置校验场景）不做这层判断，避免误报。
     valid_tools: set[str] = set()

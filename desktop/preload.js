@@ -12,7 +12,7 @@ contextBridge.exposeInMainWorld("fengcode", {
 
   /** ★ 拿到拖入/选择的文件的**真实绝对路径**。
       Electron 32 起 File.path 已被移除，必须走 webUtils.getPathForFile。
-      没有它，前端只能拿到文件名 —— 用户实测的「只记录名称，路径请直接告诉我」就是这么来的。 */
+      没有它，前端只能拿到文件名 —— 实测的「只记录名称，路径请直接告诉我」就是这么来的。 */
   getPathForFile: (file) => {
     try { return webUtils.getPathForFile(file) || ""; } catch (e) { return ""; }
   },

@@ -289,7 +289,7 @@ class SessionStore:
             tool_name=row["tool_name"],
             reasoning=row["reasoning"] or "",
             # ★ 附件必须一起读回来：否则历史里的图片在下一轮模型调用中消失，
-            #   模型只记得「用户说过话」，看不到图（用户实测过这类问题）。
+            #   模型只记得「用户说过话」，看不到图（实测过这类问题）。
             attachments=[
                 Attachment(
                     kind=a.get("kind", "image"),

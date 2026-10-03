@@ -68,7 +68,7 @@ MODEL_CATALOG: dict[str, dict[str, Any]] = {
 
 # 供应商预设：界面「添加供应商」时的一键模板
 #
-# ★ 只收「厂商官方」与「用户自己的万象 API」两类，**不收 OpenRouter 这类第三方聚合**（用户明确要求）。
+# ★ 只收「厂商官方」与「用户自己的万象 API」两类，**不收 OpenRouter 这类第三方聚合**。
 # ★ 不做本地部署项（Ollama / LM Studio / vLLM 一律不预置，相关客户端已从代码移除）。
 # 每个预设只需用户填 key；base_url / kind / models_url 都已给全。
 PROVIDER_PRESETS: dict[str, dict[str, Any]] = {

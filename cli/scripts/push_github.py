@@ -113,7 +113,7 @@ SKIP_DIRS = {
 SKIP_DIR_PREFIXES = (".fengcode", "_tmp_", "_probe_", "_test_", "_guard_")
 SKIP_DIR_SUFFIXES = (".egg-info",)
 SKIP_FILES = {".DS_Store", "Thumbs.db", "desktop.ini"}
-# ★★ 密钥与凭证类文件（2026-10-03 用户要求「不要把密钥文件打包上传」）：
+# ★★ 密钥与凭证类文件（2026-10-03 「不要把密钥文件打包上传」）：
 #   按「文件名 / 文件名前缀 / 扩展名」三类挡，与 release.py 的规则保持一致。
 #   为什么必须显式列：这些文件多数没有特殊扩展名（.env / config.toml 是纯文本），
 #   只靠 SKIP_EXT 挡不住，一旦有人把本地配置放进工程就会被推上去。

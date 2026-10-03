@@ -46,7 +46,7 @@ class ModelOverride(_Base):
     thinking: bool | None = None
     tools: bool | None = None
     # 逐模型开关：None = 未显式设置（跟随供应商启用状态），True/False = 用户在
-    # 「模型服务」页手动勾选/取消。用户要求：模型前面有勾选框，勾上才启用。
+    # 「模型服务」页手动勾选/取消。需求：模型前面有勾选框，勾上才启用。
     enabled: bool | None = None
     default_effort: EffortLevel | None = None
     supported_efforts: list[EffortLevel] | None = None
@@ -124,7 +124,7 @@ class LLMConfig(_Base):
     max_retries: int = 2
     # ★ 流式**整体**时长上限（秒）。上下文整理/流式都有统一上限。
     #   为什么必须单独有它：request_timeout 对 httpx 流式只是「块间超时」——
-    #   只要每块都在超时内到达，整条流可以跑到天荒地老。用户实测过一次调用
+    #   只要每块都在超时内到达，整条流可以跑到天荒地老。实测过一次调用
     #   651 秒（点停止像没反应、看着像卡死）。0 = 关闭该上限。
     stream_total_timeout: float = 600.0
     # ★ 2-B：压缩时的分块大小（估算 token）。历史超过这个值就分块摘要再树形归并，
@@ -139,7 +139,7 @@ class LLMConfig(_Base):
     # 就触发一次整理（默认 160000）。
     # ★ 为什么必须要它：1M 窗口 × 0.8 = 838K 的触发点，一次真实会话根本到不了，
     #   于是**压缩永远不会触发**，直到上游直接报「上下文超限」把这一轮打断
-    #   （用户实测：窗口设 1M 后，对话跑到一半就出问题）。设成负数 = 关闭这个上限。
+    #   （实测：窗口设 1M 后，对话跑到一半就出问题）。设成负数 = 关闭这个上限。
     context_soft_limit_tokens: int = 160_000
     keep_recent_turns: int = 6
     # 压缩时永远原样保留的开头消息数（系统提示 + 最初诉求），keep_first

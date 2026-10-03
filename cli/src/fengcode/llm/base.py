@@ -48,7 +48,7 @@ def is_retryable_status(status: int) -> bool:
 
 
 # ---- 分层网络诊断 --------------------------------------------------------
-# ★ 为什么需要（用户实测痛点）：断线时界面只有一句「网络错误：ConnectError」，
+# ★ 为什么需要（实测痛点）：断线时界面只有一句「网络错误：ConnectError」，
 #   分不清是「我们自己的网络 / 上游网关 / 模型服务」哪一层断的，只能干等超时。
 #   这里把异常按发生位置归到五层，每层给一句人话 + 下一步动作。
 _LAYER_DNS = "dns"          # 域名解析失败：本机 DNS / 域名写错
@@ -212,7 +212,7 @@ class BaseLLMClient(abc.ABC):
                 last = e
                 if i == attempts - 1:
                     # ★ 分层诊断：把「哪个环节断了」说清楚，而不是甩一句
-                    #   「网络错误：ConnectError」（用户实测反馈就是分不清层次）。
+                    #   「网络错误：ConnectError」（实测反馈就是分不清层次）。
                     layer, hint = diagnose_error(e)
                     raise LLMError(hint, retryable=True) from e
             # 指数退避 + 抖动
@@ -278,7 +278,7 @@ class BaseLLMClient(abc.ABC):
         # ★ 整体时长上限。
         #   为什么必须有：`httpx.Timeout(provider.timeout_seconds)` 对**流式**是
         #   「块间超时」——只要每个块都在超时内到达，整条流可以无限跑下去。
-        #   用户实测单次调用跑过 651 秒（点停止像没反应、看起来像卡死）。
+        #   实测单次调用跑过 651 秒（点停止像没反应、看起来像卡死）。
         #   这里按「整条流的总时长」兜底；超时抛错，但**已 yield 的事件都已送达**，
         #   调用方（agent._stream_once）会保留这些片段，不会白跑。
         budget = self.stream_total_timeout()
@@ -347,7 +347,7 @@ class BaseLLMClient(abc.ABC):
         """整条流的总时长上限（秒）。
 
         读取顺序：供应商级 extra 覆盖 → LLMConfig.stream_total_timeout → 600 秒兜底。
-        ★ 默认给 600 秒而不是 300：用户实测过 651 秒的长思考，压到 300 会把正常
+        ★ 默认给 600 秒而不是 300：实测过 651 秒的长思考，压到 300 会把正常
         的长推理误杀；600 秒既能拦住真正的「卡死」，又不会打断长思考。
         """
         override = None
@@ -468,7 +468,7 @@ def merge_tool_call_delta(acc: dict[int, dict], deltas: list[dict]) -> list[Stre
         # 旧实现只在 ``arguments`` 非空时才发事件。但模型/中转常把 function.name
         # 与 arguments 分在不同 chunk 到达，首个 chunk 只带 name —— 那段空窗里
         # 前端收不到任何事件，界面停在「思考完成」后毫无动静，直到参数真正开始
-        # 流才突然冒出卡片（用户实测「思考完成后等了十几秒才出现 write_file 提示」）。
+        # 流才突然冒出卡片（实测「思考完成后等了十几秒才出现 write_file 提示」）。
         # 现在只要工具名一出现就先发一条（text 为空），让界面立刻显示「正在生成参数」。
         if args or (slot["name"] and not announced):
             slot["_announced"] = True

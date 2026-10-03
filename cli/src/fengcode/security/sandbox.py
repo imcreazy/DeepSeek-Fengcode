@@ -173,7 +173,7 @@ def python_executable() -> str:
       打包后 sys.executable 指向 Fengcode.exe **自己** —— 于是
       `python_exec` / `run_script` / `install_packages` 会去执行
       `Fengcode.exe -X utf8 script.py`，被 click 报 `No such option: -X` 全部失败。
-      （用户实测：实例日志里这两个工具**每一次**都失败，AI 只能改用 shell 绕。）
+      （实测：实例日志里这两个工具**每一次**都失败，AI 只能改用 shell 绕。）
 
     规则：只在「当前进程就是 Python」时用 sys.executable；否则去找系统的
     python / python3，再退到 Windows 的 py 启动器。
@@ -254,7 +254,7 @@ def _decode_output(raw: bytes | None) -> str:
     """把子进程输出解码成文本。
 
     ★ 为什么不能硬编 utf-8：中文 Windows 的 PowerShell 5.1 / cmd 默认按 **GBK(cp936)**
-      输出，硬用 utf-8+replace 会得到满屏乱码（用户实测）。这里按「控制台代码页」
+      输出，硬用 utf-8+replace 会得到满屏乱码（实测）。这里按「控制台代码页」
       解码，并在 GBK 失败时退回 utf-8 —— 两种都试，哪个不产生替换字符就用哪个。
     """
     if not raw:
