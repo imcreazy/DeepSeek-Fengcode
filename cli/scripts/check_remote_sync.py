@@ -32,15 +32,23 @@ def main() -> int:
     # 本地
     files, _ = P.collect()
     local = {}
-    BINARY_EXT = {".png", ".ico", ".jpg", ".jpeg", ".gif", ".webp", ".exe", ".dll", ".db"}
+    BINARY_EXT = {".png", ".ico", ".jpg", ".jpeg", ".gif", ".webp", ".exe", ".dll", ".db",
+                  ".woff", ".woff2", ".ttf", ".otf", ".eot", ".pdf", ".zip", ".gz",
+                  ".sqlite", ".sqlite3", ".so", ".dylib", ".bin", ".pyc"}
     for rel, path, _size in files:
         posix = str(rel).replace("\\", "/")
         try:
             raw = path.read_bytes()
         except OSError:
             continue
-        # 二进制文件不做换行归一化；文本按 LF（与 .gitattributes 一致）
-        local[posix] = git_blob_sha(raw) if path.suffix.lower() in BINARY_EXT else loose_sha(raw)
+        # 二进制文件不做换行归一化；文本按 LF（与 .gitattributes 一致）。
+        # ★ 二进制扩展名要列全：漏掉的会被当文本做 LF 归一化，而二进制里恰好
+        #   可能含 \r\n 字节序列（实测 .woff2 就是），归一化后哈希必然对不上，
+        #   于是每次核对都报「内容不一致」的假警报。
+        #   另加一道与扩展名无关的兜底：前 8KB 里出现 NUL 的一定是二进制，
+        #   文本文件不会有 NUL —— 扩展名列表总有漏网，这层更可靠。
+        is_bin = path.suffix.lower() in BINARY_EXT or b"\x00" in raw[:8192]
+        local[posix] = git_blob_sha(raw) if is_bin else loose_sha(raw)
 
     # 远程
     st, ref = P.api("GET", f"/repos/{P.OWNER}/{P.REPO}/git/ref/heads/{P.BRANCH}")
