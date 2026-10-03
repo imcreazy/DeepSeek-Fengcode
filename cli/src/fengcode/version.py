@@ -2,7 +2,7 @@
 
 __app_name__ = "Fengcode"
 __app_name_en__ = "Fengcode"
-__version__ = "1.2.8"
+__version__ = "1.2.9"
 __author__ = "Fengcode Contributors"
 __license__ = "MIT"
 __homepage__ = "https://github.com/imcreazy/DeepSeek-Fengcode"
