@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: 测试 (${{ matrix.os }} / Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.10", "3.11", "3.12"]
+        exclude:
+          # 减少矩阵规模：Windows/macOS 只测一个版本
+          - os: windows-latest
+            python-version: "3.10"
+          - os: windows-latest
+            python-version: "3.11"
+          - os: macos-latest
+            python-version: "3.10"
+          - os: macos-latest
+            python-version: "3.11"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: 冒烟测试（核心层）
+        run: python scripts/smoke.py
+
+      - name: MCP 双向测试
+        run: python scripts/check_mcp.py
+
+      - name: 插件系统测试
+        run: python scripts/check_plugins.py
+
+      - name: 配置导入测试
+        run: python scripts/check_import.py
+
+      - name: 边界场景测试
+        run: python scripts/check_improve.py
+
+      - name: 服务端接口测试
+        run: python scripts/check_server.py
+
+      - name: 单元测试
+        run: python -m pytest tests/ -v --tb=short
+        continue-on-error: true
+
+  lint:
+    name: 语法与导入检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安装
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install ruff
+      - name: 编译全部模块
+        run: python -m compileall -q src/fengcode
+      - name: 导入检查
+        run: |
+          python -c "
+          import fengcode
+          from fengcode.config import get_config
+          from fengcode.tools import register_builtin
+          from fengcode.tools.base import get_registry
+          from fengcode.mcp import MCPManager
+          from fengcode.plugins import PluginManager
+          from fengcode.workflow import WorkflowRunner
+          from fengcode.scheduler import Scheduler
+          from fengcode.server.app import create_app
+          from fengcode.cli.main import app
+          r = register_builtin(get_registry())
+          print('工具数：', len(r['registered']))
+          assert not r['errors'], r['errors']
+          assert len(r['registered']) >= 45
+          print('全部导入正常')
+          "
+      - name: Ruff 检查（不阻断）
+        run: ruff check src/ --select E9,F63,F7,F82 --exit-zero

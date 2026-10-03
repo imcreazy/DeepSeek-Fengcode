@@ -1,0 +1,26 @@
+name: system-monitor
+display_name: 系统监控
+version: 1.0.0
+description: 提供 CPU/内存/磁盘/网络/进程的实时快照与「资源告急」检测，并在每次工具调用后记录耗时统计。
+author: Fengcode
+license: MIT
+main: plugin.py
+enabled: true
+permissions: [tools, hooks]
+hooks: [after_tool, register_prompt]
+tools:
+  - name: snapshot
+    description: 采集当前系统资源快照（CPU、内存、磁盘、网络、负载）
+    parameters:
+      detail: {type: string, description: "basic 或 full"}
+    required: []
+  - name: top_processes
+    description: 按资源占用列出前 N 个进程
+    parameters:
+      by: {type: string, description: "cpu 或 memory"}
+      count: {type: integer, description: 返回条数，默认 10}
+    required: []
+  - name: check_pressure
+    description: 检查是否有资源告急（内存不足/磁盘将满/CPU 持续高负载）
+    parameters: {}
+    required: []

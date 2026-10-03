@@ -1,0 +1,53 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- 运行期数据（绝不入库） ----
+.fengcode/
+.fengcode-*/
+fengcode-data/
+*.db
+*.db-wal
+*.db-shm
+logs/
+audit/
+workspace/
+sessions/
+uploads/
+files/
+
+# ---- Node / Electron ----
+node_modules/
+desktop/node_modules/
+desktop/dist/
+desktop/out/
+
+# ---- 交付产物（体积大，走 Release 而不是仓库） ----
+交付/
+release/
+*.exe
+*.zip
+*.7z
+
+# ---- 测试截图与临时文件 ----
+_ui_shots/
+_screenshots/
+_shot*.png
+_shot*.jpg
+_srv.log
+_srv.err
+_tmp_*
+*.log
+*.pid
+Thumbs.db
+.DS_Store
+desktop.ini

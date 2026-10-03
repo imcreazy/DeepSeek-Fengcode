@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fengcode · 中文 AI Agent</title>
+<link rel="icon" href="/favicon.ico">
+<link rel="stylesheet" href="/static/app.css">
+<!-- ★ 2-Q：公式样式（字体在 /static/vendor/fonts/，与 css 相对路径一致） -->
+<link rel="stylesheet" href="/static/vendor/katex.min.css">
+</head>
+<body>
+<div id="theme-bg"></div>
+<div id="theme-dim"></div>
+<div id="app">
+  <aside id="sidebar">
+    <div class="side-head">
+      <div class="logo" id="app-logo"></div>
+      <div class="brand">Fengcode<small>中文 AI Agent</small></div>
+    </div>
+
+    <!-- 新建会话 -->
+    <div class="side-top">
+      <button class="new-chat" id="new-chat-btn">
+        <span class="ico"></span><span>新建会话</span>
+      </button>
+    </div>
+
+    <!-- 工作区 + 会话列表 -->
+    <nav class="side-nav" id="nav"></nav>
+
+    <!-- 底部：搜索 / 清理 / 设置 -->
+    <div class="side-foot">
+      <div class="side-tools">
+        <button class="tool-btn" id="tool-search" title="搜索会话"></button>
+        <button class="tool-btn" id="tool-clean" title="清理与归档"></button>
+        <button class="tool-btn" id="tool-settings" title="设置"></button>
+      </div>
+      <div class="fstat"><span class="status-dot" id="sdot"></span><span id="stext">连接中…</span></div>
+      <div class="fstat" id="sinfo"></div>
+    </div>
+  </aside>
+  <main id="main">
+    <header id="topbar">
+      <div class="window-drag" aria-hidden="true"></div>
+      <button class="logo" id="top-logo" title="回到对话" style="display:none"></button>
+      <button class="btn ghost icon" id="menu-btn" title="菜单" style="display:none"></button>
+      <button class="btn ghost icon" id="back-btn" title="返回" style="display:none"></button>
+      <h2 id="page-title">对话</h2>
+      <span class="sub" id="page-sub"></span>
+      <div class="spacer"></div>
+      <div class="row tight" id="top-actions"></div>
+      <button class="btn ghost icon" id="panel-toggle" title="侧栏（信息 / 项目文件）"></button>
+      <div class="window-controls" id="window-controls">
+        <button class="window-control" data-window-action="minimize" aria-label="最小化">—</button>
+        <button class="window-control" data-window-action="maximize" aria-label="最大化">□</button>
+        <button class="window-control close" data-window-action="close" aria-label="关闭">×</button>
+      </div>
+    </header>
+    <div id="main-body">
+      <!-- 拖拽调宽：左侧栏 -->
+      <div class="resizer" id="resizer-left" title="拖动调整宽度"></div>
+      <div id="view">
+        <div class="page" id="page-chat" style="padding:0">
+          <div id="chat-page" class="active">
+            <div id="messages"></div>
+            <!-- ★ 待办清单：AI 用 todo 工具排的计划实时显示在这里（用户要求的「拉待办任务」）。
+                 放在对话区底部、输入卡片之上，不遮挡输入。 -->
+            <div id="todo-panel" class="todo-panel" hidden></div>
+            <button id="jump-bottom" class="jump-bottom" type="button" title="回到底部">↓ <span>回到底部</span></button>
+            <div id="msg-nav" title="对话导航：点一下跳到那条消息"></div>
+            <div id="composer">
+              <div class="composer-resize" id="composer-resize" title="拖动调整输入区高度"></div>
+              <div class="composer-resize-x" id="composer-resize-x" title="拖动调整对话框宽度"></div>
+              <div class="composer-inner">
+                <div id="input-box">
+                  <!-- ★ 状态行（logo + 状态词 + t/s）放在**对话框内部顶部**，
+                       与下面的加号/权限/模式按钮同属一张卡片。
+                       旧写法在卡片外面，像一行贴在框上的浮字（用户要求挪进来，
+                       并框内上部就是这一行）。 -->
+                  <div class="composer-status" id="composer-status">
+                    <span class="cs-logo" id="cs-logo"></span>
+                    <span class="cs-text" id="cs-text">就绪</span>
+                    <span class="cs-speed" id="cs-speed"></span>
+                    <span class="spacer"></span>
+                  </div>
+                  <div class="attachments" id="atts"></div>
+                  <!-- 排队区：执行中继续发的指令列在这里，可取回/删除/插队立即发 -->
+                  <div class="composer-queue" id="composer-queue" hidden></div>
+                  <textarea id="input" rows="1" placeholder="说点什么…（Enter 发送，Shift+Enter 换行，输入 / 调用命令或技能）"></textarea>
+                  <div class="composer-bar">
+                    <!-- 左：+ 菜单 -->
+                    <button class="cb-icon" id="btn-plus" title="添加内容">
+                      <span id="plus-ic"></span>
+                    </button>
+                    <!-- 权限等级（常驻） -->
+                    <button class="chip chip-inline" id="perm-chip" title="权限等级">
+                      <span id="perm-chip-ic"></span><span id="perm-chip-label">工作区可改</span>
+                    </button>
+                    <!-- 执行方式（常驻，图 1 那种红字提示风格） -->
+                    <button class="chip chip-inline" id="mode-chip" title="执行方式">
+                      <span id="mode-chip-ic"></span><span id="mode-chip-label">自动</span>
+                    </button>
+                    <span class="spacer"></span>
+                    <span class="composer-hint" id="usage-hint"></span>
+                    <select id="model-select" title="选择模型"></select>
+                    <button class="btn primary" id="send-btn" title="发送">
+                      <span id="send-ic"></span>
+                    </button>
+                    <button class="btn danger sm" id="stop-btn" style="display:none">停止</button>
+                  </div>
+                </div>
+                <div id="slash-menu"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- 设置中心：左侧分类 + 右侧详情 -->
+        <div class="page" id="page-settings" style="padding:0">
+          <div id="settings-wrap">
+            <div id="settings-side"></div>
+            <div id="settings-body"></div>
+            <!-- 给 PAGES.settings 用的渲染宿主：与 settings-body 平级，
+                 这样它整页渲染时不会把设置中心的容器一起覆盖掉。 -->
+            <div id="settings-render" style="display:none"></div>
+          </div>
+        </div>
+        <!-- 其余页面由设置中心内部的链接直接进入（保留容器以兼容旧代码） -->
+        <div class="page" id="page-sessions"></div>
+        <div class="page" id="page-memory"></div>
+        <div class="page" id="page-skills"></div>
+  <div class="page" id="page-subagents"></div>
+        <div class="page" id="page-tools"></div>
+        <div class="page" id="page-mcp"></div>
+        <div class="page" id="page-plugins"></div>
+        <div class="page" id="page-workflows"></div>
+        <div class="page" id="page-jobs"></div>
+        <div class="page" id="page-remote"></div>
+        <div class="page" id="page-stats"></div>
+        <div class="page" id="page-audit"></div>
+<div class="page" id="page-about"></div>
+      </div>
+      <!-- 右侧信息面板（可折叠）：上下文档位 / 会话指标 / 用量分析 -->
+      <!-- 拖拽调宽：右侧栏 -->
+      <div class="resizer" id="resizer-right" title="拖动调整宽度"></div>
+      <aside id="infopanel" class="open">
+        <div class="ip-tabs" id="ip-tabs">
+          <button class="ip-tab active" data-iptab="info">信息</button>
+          <button class="ip-tab" data-iptab="files">项目文件</button>
+          <button class="ip-tab" data-iptab="browser">浏览器</button>
+          <button class="btn ghost icon ip-close" id="ip-close" title="收起"></button>
+        </div>
+        <div class="ip-pane active" id="ip-pane-info">
+          <div class="ip-body" id="ip-body"></div>
+        </div>
+        <div class="ip-pane" id="ip-pane-files">
+          <div class="ip-body" id="files-body"></div>
+        </div>
+        <!-- 内置浏览器（1.2.7）：这里只是**控制条 + 占位**。
+             真实网页由主进程的 WebContentsView 画在这块占位区上方（独立图层），
+             所以下方 .web-stage 必须留出同样大小的空白，否则会被控制条压住。 -->
+        <div class="ip-pane" id="ip-pane-browser">
+          <div class="bw-bar">
+            <button class="btn ghost icon" id="bw-back" title="后退"></button>
+            <button class="btn ghost icon" id="bw-forward" title="前进"></button>
+            <button class="btn ghost icon" id="bw-reload" title="刷新"></button>
+            <input id="bw-url" class="bw-url" type="text" spellcheck="false"
+                   placeholder="输入网址后回车（仅支持 http / https）" />
+            <button class="btn ghost icon" id="bw-go" title="打开"></button>
+            <button class="btn ghost icon" id="bw-close" title="关闭网页"></button>
+          </div>
+          <div class="bw-status" id="bw-status"></div>
+          <div class="web-stage" id="web-stage"></div>
+          <div class="bw-actions">
+            <button class="btn sm" id="bw-read" title="把当前页正文放进对话，让 AI 阅读">
+              读取当前页正文
+            </button>
+            <button class="btn sm ghost" id="bw-shot" title="截取当前页画面并放进对话">截图</button>
+          </div>
+          <div class="bw-hint" id="bw-hint"></div>
+        </div>
+      </aside>
+    </div>
+    <!-- 底部状态栏 -->
+    <footer id="statusbar">
+      <span id="sb-left"></span>
+      <span class="spacer"></span>
+      <span id="sb-right"></span>
+      <!-- 粘贴提示：★ 并入状态栏「末尾」，不再单独占一条横条（用户要求） -->
+      <span class="sb-item sb-paste" id="sb-paste" hidden></span>
+    </footer>
+  </main>
+</div>
+<div id="approvals"></div>
+<div id="toasts"></div>
+<div id="modal-bg"><div id="modal">
+  <div id="modal-head"></div><div id="modal-body"></div><div id="modal-foot"></div>
+</div></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

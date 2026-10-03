@@ -1,0 +1,84 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fengcode"
+version = "1.2.7"
+description = "Fengcode —— 功能全面的中文 AI Agent 平台（桌面端 + CLI + Web UI）"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Fengcode Contributors" }]
+keywords = ["ai", "agent", "llm", "mcp", "desktop", "cli", "中文"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Natural Language :: Chinese (Simplified)",
+]
+
+dependencies = [
+  # 核心
+  "httpx>=0.27",
+  "pydantic>=2.6",
+  "pyyaml>=6.0",
+  "python-dotenv>=1.0",
+  # CLI / TUI
+  "typer>=0.12",
+  "rich>=13.7",
+  "prompt_toolkit>=3.0",
+  "textual>=0.5",
+  # 服务端 / 桌面通信
+  "starlette>=0.37",
+  "uvicorn>=0.29",
+  "websockets>=12",
+  # MCP 协议
+  "mcp>=1.0",
+  # 检索 / 向量
+  "numpy>=1.26",
+  # 文档解析
+  "pypdf>=4.0",
+  "pdfplumber>=0.11",
+  "python-docx>=1.1",
+  "openpyxl>=3.1",
+  "python-pptx>=0.6.23",
+  "pillow>=10.0",
+  # 网络
+  "ddgs>=6.0",
+  "lxml>=5.0",
+  "beautifulsoup4>=4.12",
+]
+
+[project.optional-dependencies]
+windows = ["pywin32>=306; sys_platform == 'win32'"]
+office = ["xlsxwriter>=3.1", "et-xmlfile>=1.1"]
+media = ["PyMuPDF>=1.24"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+build = ["pyinstaller>=6.0"]
+
+[project.scripts]
+fengcode = "fengcode.cli.main:cli_main"
+
+[project.urls]
+Homepage = "https://github.com/imcreazy/DeepSeek-Fengcode"
+Repository = "https://github.com/imcreazy/DeepSeek-Fengcode"
+Issues = "https://github.com/imcreazy/DeepSeek-Fengcode/issues"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+fengcode = [
+  "server/static/*",
+  "skills/builtin/**/*",
+  "plugins/builtin/**/*",
+  "data/*.json",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
