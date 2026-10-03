@@ -365,14 +365,23 @@ def mask_observations(
     *,
     keep_recent: int = 8,
     max_chars: int = 600,
+    max_tokens: int = 0,
 ) -> list[Message]:
     """观测遮罩：保留工具调用的"骨架"，把旧的冗长工具输出替换为占位摘要。
 
-    ObservationMaskingCondenser。好处是**不需要额外调用模型**，
-    却能省下大量 token：模型仍能看到"调用过什么工具、成功还是失败"的脉络，
-    只是看不到旧的原始输出。
+    好处是**不需要额外调用模型**，却能省下大量 token：模型仍能看到
+    "调用过什么工具、成功还是失败"的脉络，只是看不到旧的原始输出。
 
     只对**较旧**的工具消息生效，最近若干条保持原样。
+
+    ★ 两处升级（2026-10-04）：
+      1. **保留头尾**，不再只留开头。很多工具输出的关键信息在**末尾** ——
+         报错栈的最后一行、测试的汇总行、命令的退出摘要、统计表的合计。
+         只留开头会把最该看的部分丢掉（实测：只留头时，报错原因常在被切掉的那半）。
+      2. **阈值按 token**。字符数与真实占用差得远（中文一字约 0.6 token、
+         英文一字符约 0.25 token），同一份「600 字符」上限对中英文效果完全不同；
+         按 token 才与上下文预算同一把尺子。``max_tokens`` 给了就按 token 判断，
+         否则回退到 ``max_chars``（保持向后兼容）。
     """
     if not messages:
         return messages
@@ -381,25 +390,42 @@ def mask_observations(
     if len(tool_idx) <= keep_recent:
         return messages
     to_mask = set(tool_idx[:-keep_recent])
+    # ★ 按 token 口径时，先把「保留多少」换算成一个字符预算，
+    #   后面切分仍按字符走 —— 因为切分本身必须落在字符边界上（不能把一个字切两半）。
+    #   换算用 estimate_tokens 的反向估算：中文约 1 字 ≈ 0.6 token，
+    #   取保守系数让实际保留量不超过目标。
+    budget_chars = max_chars
+    if max_tokens > 0:
+        budget_chars = max(200, int(max_tokens / 0.6))
     out: list[Message] = []
     for i, m in enumerate(messages):
         if i not in to_mask:
             out.append(m)
             continue
         body = m.content or ""
-        if len(body) <= max_chars:
+        # 判断是否超预算：按 token 算（给了 token 阈值就用它，否则退回字符数）
+        over = (estimate_tokens(body) > max_tokens) if max_tokens > 0 else (len(body) > budget_chars)
+        if not over:
             out.append(m)
             continue
-        # 保留开头（通常是最关键的结果/报错）与极简提示
-        head = body[: max(0, max_chars - 80)].rstrip()
-        note = f"\n…（输出共 {len(body)} 字符，已折叠；如需重看请重新调用该工具）"
+        # ★ 头尾都保留：开头通常是「读了什么 / 开始的结果」，末尾常有报错与汇总。
+        #   中间那段才是真正可以丢的（大段正文、重复列举）。
+        #   标记单独占一行，让模型明确知道这里被折叠过、不是原文如此。
+        marker = f"\n…（此处折叠 {len(body)} 字符的中间内容，共 {estimate_tokens(body)} tokens；如需重看请重新调用该工具）…\n"
+        keep = max(0, budget_chars - len(marker))
+        head_n = keep // 2
+        tail_n = keep - head_n
+        # 头尾各留一半；若原文不够长则整体保留（上面已判过 over，这里兜底）
+        head = body[:head_n].rstrip()
+        tail = body[-tail_n:].lstrip() if tail_n > 0 else ""
         out.append(
             Message(
                 role="tool",
-                content=head + note,
+                content=f"{head}{marker}{tail}",
                 tool_call_id=m.tool_call_id,
                 tool_name=m.tool_name,
-                meta={**(m.meta or {}), "masked": True, "original_chars": len(body)},
+                meta={**(m.meta or {}), "masked": True, "original_chars": len(body),
+                      "original_tokens": estimate_tokens(body)},
             )
         )
     return out

@@ -42,6 +42,49 @@ class CallRecord:
     currency: str = "¥"
     duration: float = 0.0
     error: str | None = None
+    # ★ 缓存未命中的归因信息（见 CacheDiagnostics）。
+    #   为什么要带着它：命中率只有一个数字时，「为什么这次没命中」只能靠猜 ——
+    #   是系统提示变了？工具定义变了？还是历史被重写过？带上归因后就能直接回答。
+    diagnostics: "CacheDiagnostics | None" = None
+
+
+@dataclass
+class CacheDiagnostics:
+    """本次调用相对上一次调用，**可缓存前缀**是否发生了变化、变在哪。
+
+    上游的前缀缓存是「从头逐字节比对」，一旦某处不同、之后全部失效。所以能命中多少，
+    取决于「这次请求的前缀与上次相同到第几个字节」。这里把前缀拆成几个组成部分分别取指纹，
+    就能回答「是哪个部分变了导致的未命中」：
+
+      · system —— 系统提示词（含工作区、模式、技能目录等）
+      · tools  —— 工具定义（增删工具、改了描述都会变）
+      · log    —— 历史消息内容（被压缩重写过、或消息被删改）
+      · body   —— 除前缀外的其余正文
+
+    三者都没变却仍然未命中 → 那是**服务商侧**的原因（缓存过期、路由到了别的节点），
+    不是本地能修的，据此可以少走弯路。
+    """
+
+    prefix_hash: str = ""
+    prefix_changed: bool = False
+    change_reasons: tuple[str, ...] = ()
+    system_hash: str = ""
+    tools_hash: str = ""
+    body_hash: str = ""
+    # 上一次与本轮**共同携带**的消息条数 —— 越少说明历史被改动得越多
+    carried_messages: int = 0
+    # 工具定义的规模（token 估算），便于判断「是不是工具太多把前缀撑爆了」
+    tool_schema_tokens: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "prefix_changed": self.prefix_changed,
+            "change_reasons": list(self.change_reasons),
+            "system_hash": self.system_hash,
+            "tools_hash": self.tools_hash,
+            "carried_messages": self.carried_messages,
+            "tool_schema_tokens": self.tool_schema_tokens,
+        }
 
 
 def _in_peak_hours(spec: str, when: float | None = None) -> bool:
@@ -139,6 +182,9 @@ class LLMClient:
         self._lock = threading.RLock()
         self.records: list[CallRecord] = []
         self._on_record: list[Any] = []
+        # ★ 上一次调用的前缀指纹（用于判断本轮前缀有没有变、变在哪）。
+        #   按 (供应商, 模型) 分别记 —— 换模型后前缀本来就不同，不该算「变化」。
+        self._last_prefix: dict[tuple[str, str], dict[str, Any]] = {}
 
     # ---- 客户端管理 ----------------------------------------------------
     def _make_client(self, provider: Provider) -> BaseLLMClient:
@@ -248,22 +294,31 @@ class LLMClient:
                 last_err = e
                 continue
             t0 = time.time()
+            # ★ 发起前先算缓存前缀归因（此时才知道这次带的是什么），
+            #   供「命中率为什么掉了」定位用。
+            try:
+                diag = self._diagnose(pname, mname, messages, tools)
+            except Exception:
+                diag = None
             try:
                 resp = await client.chat(
                     messages, model=mname, tools=tools,
                     **self._call_kwargs(prov, mname, kwargs),
                 )
-                self._record(pname, mname, resp.usage, time.time() - t0, prov, error=resp.error)
+                self._record(pname, mname, resp.usage, time.time() - t0, prov,
+                             error=resp.error, diagnostics=diag)
                 if resp.error and fallback and len(attempts) > 1:
                     last_err = LLMError(resp.error)
                     continue
                 return resp
             except LLMError as e:
-                self._record(pname, mname, Usage(), time.time() - t0, prov, error=str(e))
+                self._record(pname, mname, Usage(), time.time() - t0, prov,
+                             error=str(e), diagnostics=diag)
                 last_err = e
                 continue
             except Exception as e:  # pragma: no cover
-                self._record(pname, mname, Usage(), time.time() - t0, prov, error=str(e))
+                self._record(pname, mname, Usage(), time.time() - t0, prov,
+                             error=str(e), diagnostics=diag)
                 last_err = e
                 continue
         if isinstance(last_err, LLMError):
@@ -284,12 +339,23 @@ class LLMClient:
         t0 = time.time()
         usage = Usage()
         err: str | None = None
+        # ★ 与 chat 同理：发起前先算前缀归因，随记账一起留下。
+        try:
+            diag = self._diagnose(pname, mname, messages, tools)
+        except Exception:
+            diag = None
         try:
             async for ev in client.chat_stream(
                 messages, model=mname, tools=tools, **self._call_kwargs(prov, mname, kwargs)
             ):
                 if ev.type == "usage" and ev.usage:
                     usage = ev.usage
+                    # ★ 把归因挂在用量事件上带给上层 —— 界面据此解释「为什么没命中」。
+                    if diag is not None:
+                        try:
+                            ev.diagnostics = diag.to_dict()
+                        except Exception:
+                            pass
                 if ev.type == "error":
                     err = ev.error
                 yield ev
@@ -297,7 +363,8 @@ class LLMClient:
             err = str(e)
             yield StreamEvent(type="error", error=err)
         finally:
-            self._record(pname, mname, usage, time.time() - t0, prov, error=err)
+            self._record(pname, mname, usage, time.time() - t0, prov,
+                         error=err, diagnostics=diag)
 
     def _record(
         self,
@@ -308,6 +375,7 @@ class LLMClient:
         prov: Provider,
         *,
         error: str | None = None,
+        diagnostics: "CacheDiagnostics | None" = None,
     ) -> None:
         info = self.manager.model_info(model, prov)
         price = info.get("price") or {}
@@ -320,6 +388,7 @@ class LLMClient:
             currency=currency,
             duration=duration,
             error=error,
+            diagnostics=diagnostics,
         )
         self.records.append(rec)
         # 只保留最近 2000 条内存记录，持久化交给 stats 模块
@@ -330,6 +399,104 @@ class LLMClient:
                 cb(rec)
             except Exception:
                 pass
+
+    # ---- 缓存前缀归因 --------------------------------------------------
+    def _fingerprint(
+        self,
+        messages: list[Message],
+        tools: list[ToolSpec] | None,
+    ) -> dict[str, Any]:
+        """把请求拆成几个组成部分分别取指纹，用于回答「前缀为什么变了」。
+
+        为什么拆开取而不是整体算一个哈希：整体哈希只能告诉你「变了」，
+        拆开才能告诉你「变在哪」—— 是系统提示、工具定义、还是历史内容。
+        这决定了下一步该去查哪里。
+        """
+        import hashlib
+        import json
+
+        def h(text: str) -> str:
+            return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16]
+
+        # 系统消息视为前缀的头部（各供应商都把 system 放在最前）
+        sys_parts = [m.content or "" for m in messages if m.role == "system"]
+        system_hash = h("\x00".join(sys_parts))
+
+        # 工具定义：名字 + 描述 + 参数结构，任一变化都会让前缀失效
+        try:
+            tools_blob = json.dumps(
+                [
+                    {"name": getattr(t, "name", ""), "desc": getattr(t, "description", ""),
+                     "params": getattr(t, "parameters", None)}
+                    for t in (tools or [])
+                ],
+                ensure_ascii=False, sort_keys=True, default=str,
+            )
+        except Exception:
+            tools_blob = str(tools or "")
+        tools_hash = h(tools_blob)
+
+        # 历史正文（非 system 的消息），按顺序拼接
+        body_parts = [f"{m.role}:{m.content or ''}" for m in messages if m.role != "system"]
+        body_hash = h("\x00".join(body_parts))
+
+        from ..utils import estimate_tokens
+
+        return {
+            "system": system_hash,
+            "tools": tools_hash,
+            "body": body_hash,
+            "prefix": h(system_hash + tools_hash),
+            "n_messages": len(messages),
+            "tool_schema_tokens": estimate_tokens(tools_blob),
+            "body_parts": body_parts,
+        }
+
+    def _diagnose(
+        self,
+        provider: str,
+        model: str,
+        messages: list[Message],
+        tools: list[ToolSpec] | None,
+    ) -> "CacheDiagnostics":
+        """算出本次调用相对上一次的归因结论，并更新记忆的前缀状态。"""
+        fp = self._fingerprint(messages, tools)
+        key = (provider, model)
+        prev = self._last_prefix.get(key)
+
+        reasons: list[str] = []
+        carried = 0
+        changed = True
+        if prev is not None:
+            if prev.get("system") != fp["system"]:
+                reasons.append("system")
+            if prev.get("tools") != fp["tools"]:
+                reasons.append("tools")
+            if prev.get("body") != fp["body"]:
+                reasons.append("log")
+            changed = bool(reasons)
+            # 共同前缀的消息条数：两边从头比，遇到不同就停
+            prev_parts = prev.get("body_parts") or []
+            cur_parts = fp["body_parts"]
+            n = 0
+            for a, b in zip(prev_parts, cur_parts):
+                if a != b:
+                    break
+                n += 1
+            carried = n
+
+        diag = CacheDiagnostics(
+            prefix_hash=fp["prefix"],
+            prefix_changed=changed,
+            change_reasons=tuple(reasons),
+            system_hash=fp["system"],
+            tools_hash=fp["tools"],
+            body_hash=fp["body"],
+            carried_messages=carried,
+            tool_schema_tokens=fp["tool_schema_tokens"],
+        )
+        self._last_prefix[key] = fp
+        return diag
 
     def on_record(self, callback: Any) -> None:
         self._on_record.append(callback)

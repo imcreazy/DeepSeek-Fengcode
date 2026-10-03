@@ -1641,11 +1641,28 @@ async function renderInfoPanel() {
         const denom = (hit + miss) > 0 ? (hit + miss) : tot;
         const rate = hitRatePct(hit, denom);
         const cls = rate >= 70 ? "" : (rate >= 40 ? "warn" : "danger");
+        // ★ 归因说明：告诉用户「这次为什么没命中」。
+        //   只有命中率偏低时才显示 —— 命中正常时这句是噪音。
+        //   没变前缀却仍低命中 → 那是服务商侧的原因，界面要如实说出来，
+        //   否则用户会一直以为是自己这边的设置有问题。
+        let why = "";
+        try {
+          const dg = S.cacheDiag;
+          if (dg && rate < 70) {
+            const LABEL = { system: "系统提示", tools: "工具定义", log: "历史内容" };
+            const rs = (dg.change_reasons || []).map((r) => LABEL[r] || r);
+            why = dg.prefix_changed
+              ? `本次变化：${rs.length ? rs.join("、") : "前缀"}` +
+                (dg.carried_messages ? `（沿用 ${dg.carried_messages} 条历史）` : "")
+              : "前缀与上次一致，未命中来自服务商侧（缓存过期或路由变更）";
+          }
+        } catch (e) {}
         return `<div class="ip-big">${rate}<span class="ip-sub">%</span></div>
           <div class="ip-bar"><i class="${cls}" style="width:${rate}%"></i></div>
           <div class="ip-legend"><span>命中 ${fmtNum(hit)}</span><span class="spacer"></span>
           <span>共 ${fmtNum(denom)}</span></div>
-          <div class="ip-legend" style="margin-top:4px"><span>口径：本会话最后一次调用（命中 / 命中+未命中）</span></div>`;
+          <div class="ip-legend" style="margin-top:4px"><span>口径：本会话最后一次调用（命中 / 命中+未命中）</span></div>
+          ${why ? `<div class="ip-legend" style="margin-top:4px"><span>${esc(why)}</span></div>` : ""}`;
       })()}
     </div>
 
@@ -3420,22 +3437,48 @@ function handleEvent(ev, c) {
       // ★ 为什么必须分开：一轮工具循环会把同一份上下文向上游重发十几次，
       //   累加 prompt_tokens 就是把它重复计数 —— 实测界面 250K、上游 20K。
       const lu = d.last_usage || u;
-      S.turnUsage = {
-        total_tokens: u.total_tokens || 0,
-        acc_prompt_tokens: u.prompt_tokens || 0,
-        acc_cached_tokens: u.cached_tokens || 0,
-        prompt_tokens: lu.prompt_tokens || 0,
-        cached_tokens: lu.cached_tokens || 0,
-        // ★ 未命中量：命中率的分母（命中 + 未命中）。上游未回时按差值兜底，
-        //   与后端 llm/base.py 的解析口径保持一致。
-        cache_miss_tokens: (lu.cache_miss_tokens != null)
-          ? Number(lu.cache_miss_tokens)
-          : Math.max(0, Number(lu.prompt_tokens || 0) - Number(lu.cached_tokens || 0)),
-        completion_tokens: u.completion_tokens || 0,
-        reasoning_tokens: u.reasoning_tokens || 0,
-        cost: d.cost || 0,
-        currency: d.currency || "",
-      };
+      // ★★ 「本轮有没有真实用量」必须先判定，不能直接按 0 覆盖（实测：
+      //    发出消息后要等整轮结束才看到数字，等的那几秒读数一直显示「尚无调用记录」，
+      //    可上一轮明明有 13022 的读数）。
+      //    根因：这个事件在**回合进行中**也会发（每轮工具执行后），而刚发出消息时
+      //    上游还没返回，last_usage 是空的 —— 整体覆盖就把上一轮的好读数抹成了 0。
+      //    判据用「有没有拿到真实的输入量」：有才覆盖，没有就保留上一轮。
+      //    注意 distinction：上游**明确返回 0**（极短输入）时 lu.prompt_tokens 是 0，
+      //    那也属于「有数据」，要如实覆盖 —— 所以看的是字段存不存在，不是值大不大。
+      const hasFresh = !!lu && lu.prompt_tokens != null && (lu.prompt_tokens > 0
+        || lu.completion_tokens != null || lu.cached_tokens != null);
+      if (hasFresh) {
+        S.turnUsage = Object.assign({}, S.turnUsage || {}, {
+          total_tokens: u.total_tokens || 0,
+          acc_prompt_tokens: u.prompt_tokens || 0,
+          acc_cached_tokens: u.cached_tokens || 0,
+          prompt_tokens: Number(lu.prompt_tokens) || 0,
+          cached_tokens: Number(lu.cached_tokens) || 0,
+          // ★ 未命中量：命中率的分母（命中 + 未命中）。上游未回时按差值兜底，
+          //   与后端 llm/base.py 的解析口径保持一致。
+          cache_miss_tokens: (lu.cache_miss_tokens != null)
+            ? Number(lu.cache_miss_tokens)
+            : Math.max(0, Number(lu.prompt_tokens || 0) - Number(lu.cached_tokens || 0)),
+          completion_tokens: u.completion_tokens || 0,
+          reasoning_tokens: u.reasoning_tokens || 0,
+          cost: d.cost || 0,
+          currency: d.currency || "",
+        });
+        // ★ 缓存前缀归因：记住「这次为什么没命中」，供右侧面板解释。
+        //   没有它时命中率只是个数字，掉了只能靠猜是哪里变了。
+        if (d.diagnostics) S.cacheDiag = d.diagnostics;
+      } else {
+        // 本轮尚无用量：只更新费用与累加口径，**保住上一轮的上下文与命中率读数**。
+        S.turnUsage = Object.assign({}, S.turnUsage || {}, {
+          total_tokens: u.total_tokens || 0,
+          acc_prompt_tokens: u.prompt_tokens || 0,
+          acc_cached_tokens: u.cached_tokens || 0,
+          completion_tokens: u.completion_tokens || 0,
+          reasoning_tokens: u.reasoning_tokens || 0,
+          cost: d.cost || 0,
+          currency: d.currency || "",
+        });
+      }
       $("#usage-hint").textContent =
         `${fmtNum(S.turnUsage.total_tokens)} tokens · ${fmtCost(S.turnUsage.cost || 0, S.turnUsage.currency)}`;
       renderInfoPanel();

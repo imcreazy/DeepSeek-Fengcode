@@ -408,6 +408,10 @@ class StreamEvent:
     finish_reason: str | None = None
     error: str | None = None
     meta: dict[str, Any] = field(default_factory=dict)
+    # ★ 缓存前缀归因（仅 usage 事件会带）。
+    #   用普通 dict 而非 CacheDiagnostics：types 层不该反过来依赖 router 层
+    #   （router 已经 import 了 types，反向依赖会成环）。
+    diagnostics: dict[str, Any] | None = None
 
 
 __all__ = [

@@ -456,7 +456,14 @@ class Agent:
                 session_id=session_id,
             )
             if cfg.llm.mask_observations:
-                msgs = mask_observations(msgs, keep_recent=int(cfg.llm.keep_recent_turns) * 2)
+                # ★ 按 token 的保留量（0 = 用内置默认）。字符与真实占用差得远：
+                #   中文一字约 0.6 token、英文一字符约 0.25 token，同一个数字
+                #   对中英文的实际效果完全不同 —— 按 token 才与上下文预算同一把尺子。
+                msgs = mask_observations(
+                    msgs,
+                    keep_recent=int(cfg.llm.keep_recent_turns) * 2,
+                    max_tokens=max(0, int(getattr(cfg.llm, "mask_keep_tokens", 0) or 0)),
+                )
         return await self.compact(msgs, window=window, session_id=session_id, tokens=tokens)
 
     async def compact(
@@ -943,7 +950,11 @@ class Agent:
             self.bus.emit(
                 Ev.USAGE,
                 {"usage": total_usage, "last_usage": last_usage,
-                 "cost": cost_sum, "currency": currency},
+                 "cost": cost_sum, "currency": currency,
+                 # ★ 缓存前缀归因：界面据此解释「这次为什么没命中」。
+                 **({"diagnostics": resp.raw.get("cache_diagnostics")}
+                    if resp is not None and getattr(resp, "raw", None)
+                    and resp.raw.get("cache_diagnostics") else {})},
                 session_id=sid,
             )
 
@@ -1160,6 +1171,8 @@ class Agent:
         error = None
         model_used = ""
         provider_used = ""
+        # ★ 缓存前缀归因（由 usage 事件带回，见 router._diagnose）
+        last_diag: dict[str, Any] | None = None
 
         try:
             async for ev in self.llm.chat_stream(msgs, model=ref, tools=specs or None):
@@ -1185,6 +1198,9 @@ class Agent:
                     self.bus.emit(Ev.TOOL_DELTA, {"text": ev.text, "meta": ev.meta}, session_id=sid)
                 elif ev.type == "usage" and ev.usage is not None:
                     usage = ev.usage
+                    # ★ 缓存前缀归因随用量一起带到上层，供界面解释「为什么没命中」。
+                    if getattr(ev, "diagnostics", None):
+                        last_diag = ev.diagnostics
                 elif ev.type == "done":
                     finish = ev.finish_reason
                     self.bus.emit(Ev.DONE, {"finish_reason": finish}, session_id=sid)
@@ -1214,6 +1230,14 @@ class Agent:
             provider=provider_used,
             error=error,
         )
+        # ★ 缓存前缀归因随响应带回调用方（存 raw 里，不改返回签名）。
+        #   为什么放 raw 而不是新增字段：raw 本就是「供应商原始信息的落脚处」，
+        #   诊断属于同类的旁路信息，放这里不会牵动 LLMResponse 的既有用法。
+        if last_diag:
+            try:
+                resp.raw["cache_diagnostics"] = last_diag
+            except Exception:
+                pass
         return resp, resp.content, resp.reasoning
 
     # ------------------------------------------------------------------

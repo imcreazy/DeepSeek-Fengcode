@@ -148,6 +148,11 @@ class LLMConfig(_Base):
     minimum_progress: float = 0.1
     # 是否对旧的冗长工具输出做"观测遮罩"（保留调用骨架、折叠正文，不额外花模型调用）
     mask_observations: bool = True
+    # ★ 观测遮罩的保留量（token）。超过此量的旧工具输出会被折叠成「头 + 尾 + 标记」。
+    #   为什么按 token 而不是字符：字符数与真实占用差得很远 —— 中文一个字约 0.6 token、
+    #   英文一个字符约 0.25 token，同一份「600 字符」上限对中英文的实际效果完全不同。
+    #   按 token 算才是与上下文预算同一把尺子。0 = 用内置默认值。
+    mask_keep_tokens: int = 0
     # 摘要里是否附"执行轨迹"（调用过哪些工具、成败如何），防止模型重走弯路
     keep_skeleton: bool = True
 
