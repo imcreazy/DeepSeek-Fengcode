@@ -7,7 +7,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Node](https://img.shields.io/badge/Node-20%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![License](https://img.shields.io/badge/License-MIT-2EA44F)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-4493F8)]()
+[![Platform](https://img.shields.io/badge/Platform-Windows-4493F8)]()
 [![中文](https://img.shields.io/badge/%E7%95%8C%E9%9D%A2-%E4%B8%AD%E6%96%87-red)]()
 
 [快速上手](docs/getting-started.md) · [架构说明](docs/architecture.md) · [参与开发](CONTRIBUTING.md) · [安全边界](SECURITY.md)
@@ -109,9 +109,9 @@ API Key 仅保存在本机 `config.toml`，不会上传至任何服务。
 ### 外观
 
 - 6 套基础配色：石墨 / 极光 / 板岩 / 松林 / 琥珀 / 玫瑰，与明暗模式正交
-- 10 套图片主题：全屏背景，进入对话后自动降低不透明度以保证可读性
+- 6 套纯色主题与 10 套图片主题；图片主题为全屏背景，进入对话后自动降低不透明度以保证可读性
 - 支持上传自定义背景图（PNG / JPG / WebP）
-- 可调项：字体、字号（13–22，五档）、会话宽度、界面动画
+- 可调项：字体、字号（13 / 15 / 17 / 19 / 22，默认 17）、会话宽度、界面动画
 
 ### 模型服务
 
@@ -183,9 +183,9 @@ fengcode config show|set|get|path|provider|test
 
 | 部署形态 | 位置 |
 |---|---|
-| 桌面端（安装版） | `%APPDATA%\Fengcode\` 及后端 exe 同级的 `fengcode-data\` |
+| 桌面端（安装版 / 解压即用） | 后端 exe 同级的 `fengcode-data\` |
 | 命令行版（exe） | exe 同级的 `fengcode-data\` |
-| 源码运行 | 项目目录下的 `.fengcode\` |
+| 源码运行 | 仓库根目录下的 `.fengcode\` |
 
 其中包含 `config\config.toml`（配置）、`data\fengcode.db`（会话 / 记忆 / 统计）、
 `workspace\`（工作区）。可通过环境变量 `FENGCODE_HOME` 修改位置。

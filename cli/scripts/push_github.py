@@ -186,6 +186,100 @@ def is_text(path: Path) -> bool:
     return True
 
 
+def _read_version() -> str:
+    """从 src/fengcode/version.py 读版本号（与 release.py 同一来源，避免各处不一致）。"""
+    vf = ROOT / "cli" / "src" / "fengcode" / "version.py"
+    if not vf.is_file():
+        vf = ROOT / "src" / "fengcode" / "version.py"
+    try:
+        m = re.search(r'__version__\s*=\s*"([^"]+)"', vf.read_text(encoding="utf-8"))
+        return m.group(1) if m else "未知"
+    except OSError:
+        return "未知"
+
+
+# 路径 → 变更分类（用于生成可读的提交摘要，而不是罗列 181 个文件名）
+_AREAS = [
+    ("cli/src/fengcode/server/static", "界面"),
+    ("cli/src/fengcode/core", "Agent 内核"),
+    ("cli/src/fengcode/llm", "模型接入"),
+    ("cli/src/fengcode/tools", "工具系统"),
+    ("cli/src/fengcode/storage", "存储"),
+    ("cli/src/fengcode/memory", "记忆"),
+    ("cli/src/fengcode/security", "安全与权限"),
+    ("cli/src/fengcode/server", "服务端"),
+    ("cli/src/fengcode/skills", "技能"),
+    ("cli/src/fengcode/plugins", "插件"),
+    ("cli/src/fengcode/mcp", "MCP"),
+    ("cli/src/fengcode/agents", "子智能体"),
+    ("cli/src/fengcode/scheduler", "定时任务"),
+    ("cli/tests", "测试"),
+    ("cli/scripts", "构建与发布脚本"),
+    ("cli", "命令行端"),
+    ("desktop", "桌面端"),
+    ("docs", "文档"),
+]
+
+
+def _classify(posix: str) -> str:
+    # 根目录的文档类文件归「文档」，否则会落到「仓库杂项」
+    if "/" not in posix and posix.lower().endswith((".md", ".txt")):
+        return "文档"
+    for prefix, label in _AREAS:
+        if posix.startswith(prefix + "/") or posix == prefix:
+            return label
+    return "仓库杂项"
+
+
+def build_commit_message(changed: list[str], removed: list[str], added: list[str]) -> str:
+    """按本次实际改动生成提交信息。
+
+    ★ 为什么要这样写：旧版把一段固定文案（讲的是"修复设置中心"）写死，
+      于是几十次提交的标题全都是那一句，与实际内容无关 —— 提交记录失去意义。
+      现在按「读到的版本号 + 本次真正变动的文件分类」来拼，标题永远对得上内容。
+
+    参数均为仓库相对路径（POSIX 风格）：
+      changed —— 内容有变化的文件
+      added   —— 新增的文件
+      removed —— 被删除的文件
+    """
+    ver = _read_version()
+
+    kinds = []
+    if changed:
+        kinds.append(f"更新 {len(changed)} 个文件")
+    if added:
+        kinds.append(f"新增 {len(added)} 个")
+    if removed:
+        kinds.append(f"删除 {len(removed)} 个")
+    head = "chore: 同步仓库内容" if not kinds else "、" .join(kinds)
+
+    # 主要涉及的区域（按文件数排序，最多 6 个）
+    counts: dict[str, int] = {}
+    for p in list(changed) + list(added) + list(removed):
+        area = _classify(p)
+        counts[area] = counts.get(area, 0) + 1
+    areas = sorted(counts.items(), key=lambda x: -x[1])[:6]
+
+    lines = [f"Fengcode {ver} —— {head}", ""]
+    if areas:
+        lines.append("涉及范围：")
+        for area, n in areas:
+            lines.append(f"- {area}（{n} 个文件）")
+        lines.append("")
+
+    # 关键文件点名（便于在提交页直接看出改了什么，最多 8 条）
+    key = [p for p in list(changed) + list(added)
+           if p.endswith((".py", ".js", ".css", ".html", ".md", ".toml", ".json"))]
+    if key:
+        lines.append("主要文件：")
+        for p in key[:8]:
+            lines.append(f"- {p}")
+        if len(key) > 8:
+            lines.append(f"- 其余 {len(key) - 8} 个略")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def main():
     print("=" * 62)
     print("推送 Fengcode 到 GitHub")
@@ -235,8 +329,24 @@ def main():
 
     # 5. 逐文件建 blob
     print()
+    # ★ 先取旧 tree，用于对比出「本次真正改了什么」（提交信息按它生成）。
+    old_blobs: dict[str, str] = {}
+    if parent_sha:
+        st_old, old_commit = api("GET", f"/repos/{OWNER}/{REPO}/git/commits/{parent_sha}")
+        if st_old == 200:
+            old_tree_sha = old_commit.get("tree", {}).get("sha")
+            if old_tree_sha:
+                st_tree, ot = api(
+                    "GET", f"/repos/{OWNER}/{REPO}/git/trees/{old_tree_sha}?recursive=1"
+                )
+                if st_tree == 200:
+                    for item in ot.get("tree", []):
+                        if item.get("type") == "blob":
+                            old_blobs[item["path"]] = item["sha"]
     print("上传中…")
     tree = []
+    changed_paths: list[str] = []
+    added_paths: list[str] = []
     t0 = time.time()
     for i, (rel, path, size) in enumerate(files, 1):
         posix = str(rel).replace("\\", "/")
@@ -253,14 +363,24 @@ def main():
         if st not in (200, 201):
             print("  ✗ %s：%s" % (posix, blob.get("message", blob)))
             continue
+        new_sha = blob["sha"]
+        # 与旧树对比：新文件 / 内容变化 分别归类（提交信息用）
+        if posix not in old_blobs:
+            added_paths.append(posix)
+        elif old_blobs[posix] != new_sha:
+            changed_paths.append(posix)
         tree.append({
             "path": posix,
             "mode": "100755" if posix.endswith((".sh", ".bat")) else "100644",
             "type": "blob",
-            "sha": blob["sha"],
+            "sha": new_sha,
         })
         if i % 40 == 0 or i == len(files):
             print("  已上传 %d/%d（%.1fs）" % (i, len(files), time.time() - t0))
+
+    # 被删除的文件 = 旧树里有、这次没上传的
+    new_paths = {str(r).replace("\\", "/") for (r, _p, _s) in files}
+    removed_paths = [p for p in old_blobs if p not in new_paths]
 
     print()
     print("创建目录树（%d 项）…" % len(tree))
@@ -268,20 +388,13 @@ def main():
     # 一次建完整棵树 + 一个提交。
     # （曾试过按目录分组提交，让每个文件的提交信息各不相同，
     #  但 GitHub 建树接口在连续调用时稳定返回 500，改为单次提交。）
-    commit_msg = (
-        "fix(cli): 修复设置中心所有按钮点不动、保存后样式丢失\n"
-        "\n"
-        "根因有四个：\n"
-        "- paintRules 是 const 别名，在设置页调用时还在 TDZ 里，抛错中断整页渲染，\n"
-        "  导致所有按钮都没绑上事件\n"
-        "- 设置中心复制 innerHTML，副本上的 onclick 全部失效；改为搬真实 DOM 节点\n"
-        "- 在非外观页保存时 #u-theme 不存在，val() 取到空串，applyTheme(\"\") 清空了\n"
-        "  data-theme，整套 CSS 变量失效（页面变透明、分界线消失）\n"
-        "- 顶部工具栏按 page 判断，设置中心里看不到「添加服务」这类页面级按钮\n"
-        "\n"
-        "另：新增 #settings-render 渲染宿主，避免 PAGES.settings 整页渲染时\n"
-        "覆盖设置中心自己的容器；目录结构改为 cli/ + desktop/，移除免安装版。\n"
-    )
+    #
+    # ★ 提交信息按「本次实际改动」自动生成（2026-10-03 修正）。
+    #   旧写法把一段固定文案写死在这里，于是几十次提交全是同一句
+    #   「修复设置中心…」——与实际内容完全无关，翻提交记录毫无意义。
+    #   现在改为：读 version.py 拿版本号，再用本次变更的文件路径拼出摘要。
+    commit_msg = build_commit_message(changed_paths, removed_paths, added_paths)
+    print("提交摘要：%s" % commit_msg.splitlines()[0])
 
     def post_tree(payload, label):
         """建树；网络抖动时返回空消息，重试几次。"""
