@@ -38,8 +38,8 @@ class StatsStore:
     ) -> None:
         self.db.execute(
             "INSERT INTO usage_log(ts, session_id, provider, model, prompt_tokens, output_tokens,"
-            " cached_tokens, reasoning_tokens, cost, currency, duration, kind, error)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " cached_tokens, reasoning_tokens, cache_miss_tokens, cost, currency, duration, kind, error)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 time.time(),
                 session_id,
@@ -49,6 +49,8 @@ class StatsStore:
                 usage.completion_tokens,
                 usage.cached_tokens,
                 usage.reasoning_tokens,
+                # ★ 未命中量随之落库，命中率才能按「命中 /（命中 + 未命中）」核账
+                getattr(usage, "cache_miss_tokens", 0),
                 cost,
                 currency,
                 duration,
@@ -64,6 +66,7 @@ class StatsStore:
         row = self.db.query_one(
             f"SELECT COUNT(*) AS calls, COALESCE(SUM(prompt_tokens),0) AS pt,"
             f" COALESCE(SUM(output_tokens),0) AS ot, COALESCE(SUM(cached_tokens),0) AS ct,"
+            f" COALESCE(SUM(cache_miss_tokens),0) AS cm,"
             f" COALESCE(SUM(reasoning_tokens),0) AS rt, COALESCE(SUM(cost),0) AS cost,"
             f" COALESCE(SUM(duration),0) AS dur FROM usage_log {where}",
             params,
@@ -75,6 +78,7 @@ class StatsStore:
             "prompt_tokens": int(d.get("pt") or 0),
             "output_tokens": int(d.get("ot") or 0),
             "cached_tokens": int(d.get("ct") or 0),
+            "cache_miss_tokens": int(d.get("cm") or 0),
             "reasoning_tokens": int(d.get("rt") or 0),
             "total_tokens": int(d.get("pt") or 0) + int(d.get("ot") or 0),
             "cost": round(float(d.get("cost") or 0), 6),

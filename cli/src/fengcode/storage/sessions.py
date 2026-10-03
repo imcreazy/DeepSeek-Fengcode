@@ -146,6 +146,9 @@ class SessionStore:
                 "total_tokens": int(last_usage.get("total_tokens") or 0),
                 "cached_tokens": int(last_usage.get("cached_tokens") or 0),
                 "reasoning_tokens": int(last_usage.get("reasoning_tokens") or 0),
+                # ★ 未命中量随快照一起留存：重开会话时命中率仍能按原口径恢复，
+                #   不必拿 prompt 反推（反推在不同供应商下口径不一）。
+                "cache_miss_tokens": int(last_usage.get("cache_miss_tokens") or 0),
             }
         self.db.execute(
             "UPDATE sessions SET input_tokens=input_tokens+?, output_tokens=output_tokens+?,"

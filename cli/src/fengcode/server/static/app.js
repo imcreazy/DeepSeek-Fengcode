@@ -1593,16 +1593,20 @@ async function renderInfoPanel() {
   //   （实测反馈「各模型的上下文用户设置的多少他就显示多少」）。
   const limit = S.contextLimit || 0;
   const used = u.prompt_tokens || 0;   // 最后一次调用的输入（真实上下文占用）
+  // ★ 「有没有数据」与「数字是多少」分开表达（实测「发你好之后读数停在 0」）：
+  //   停止 / 中断的回合，上游可能还没返回用量（core/agent.py 的 `if resp.usage:`），
+  //   last_usage 是空的。这时显示「0」会让人以为坏了，显示「—」才是实话。
+  const usedKnown = used > 0;
   const unlimited = !!S.contextLimitUnlimited || limit <= 0;
   const pct = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
   const barCls = limit > 0 ? (pct >= 85 ? "danger" : (pct >= 70 ? "warn" : "")) : "";
   const limitText = unlimited ? "未限制" : fmtNum(limit);
-  const hintText = unlimited ? "交给上游限制" : (pct >= 85 ? "接近上限" : "尚有余量");
+  const hintText = !usedKnown ? "尚无调用记录" : (unlimited ? "交给上游限制" : (pct >= 85 ? "接近上限" : "尚有余量"));
 
   body.innerHTML = `
     <div class="ip-card">
       <h4>上下文窗口<span class="hint">${hintText}</span></h4>
-      <div class="ip-big">${fmtNum(used)}<span class="ip-sub"> / ${limitText}</span></div>
+      <div class="ip-big">${usedKnown ? fmtNum(used) : "—"}<span class="ip-sub"> / ${limitText}</span></div>
       ${unlimited ? "" : `
       <div class="ip-bar">
         <i class="${barCls}" style="width:${pct}%"></i>
@@ -1628,13 +1632,20 @@ async function renderInfoPanel() {
         }
         const tot = u.prompt_tokens || 0;
         const hit = u.cached_tokens || 0;
-        const rate = hitRatePct(hit, tot);
+        const miss = u.cache_miss_tokens || 0;
+        // ★ 命中率口径：命中 /（命中 + 未命中）。
+        //   分母用「真正计过价的输入」而不是 prompt_tokens —— 后者在不同供应商
+        //   那里含义不一（有的含命中部分、有的只算未命中），拿它当分母会出现
+        //   「命中量比总数还大」这类看起来像造假的数字（实测踩过）。
+        //   上游没回未命中量时按 max(0, prompt - hit) 兜底，口径与后端一致。
+        const denom = (hit + miss) > 0 ? (hit + miss) : tot;
+        const rate = hitRatePct(hit, denom);
         const cls = rate >= 70 ? "" : (rate >= 40 ? "warn" : "danger");
         return `<div class="ip-big">${rate}<span class="ip-sub">%</span></div>
           <div class="ip-bar"><i class="${cls}" style="width:${rate}%"></i></div>
           <div class="ip-legend"><span>命中 ${fmtNum(hit)}</span><span class="spacer"></span>
-          <span>共 ${fmtNum(tot)}</span></div>
-          <div class="ip-legend" style="margin-top:4px"><span>口径：本会话最后一次调用</span></div>`;
+          <span>共 ${fmtNum(denom)}</span></div>
+          <div class="ip-legend" style="margin-top:4px"><span>口径：本会话最后一次调用（命中 / 命中+未命中）</span></div>`;
       })()}
     </div>
 
@@ -1721,11 +1732,19 @@ function renderStatusBar() {
   // 上下文占用 = 最后一次调用的 prompt_tokens（不是本回合累加值）
   const prompt = u.prompt_tokens || 0;
   const cached = u.cached_tokens || 0;
-  const hit = hitRatePct(cached, prompt);
+  // ★ 命中率口径：命中 /（命中 + 未命中），与右侧面板保持一致。
+  const miss = u.cache_miss_tokens || 0;
+  const hitDenom = (cached + miss) > 0 ? (cached + miss) : prompt;
+  const hit = hitRatePct(cached, hitDenom);
   const elapsed = S.turnElapsed || 0;
   const speed = S.turnSpeed || 0;
   const compact = Math.round((S.compactPct || 0.8) * 100);
   const state = S.streaming ? "运行中" : "就绪";
+  // ★ 读数「有没有数据」与「数字是多少」要分开表达（实测「发你好之后读数还是 0」）：
+  //   停止 / 中断的回合，上游可能还没返回用量（core/agent.py 的 `if resp.usage:`），
+  //   这时 last_usage 是空的 —— 显示 `0%` 会让人以为坏了。
+  //   有数据才显示数字，没有就显示占位符「—」，用户一眼能区分。
+  const hasUsage = prompt > 0;
   // 上下文读数统一走 fmtNum（全站唯一的 K/M 缩写入口）。
   // ★ 旧写法这里另有一个本地 kw 函数做四舍五入，与信息面板的 fmtNum 不一致 ——
   //   同一屏里会出现「44800」和「44.8K」两种写法（实测反馈「数字看着乱」）。
@@ -1736,7 +1755,7 @@ function renderStatusBar() {
     : (prompt ? fmtNum(prompt) : "0");
   left.innerHTML =
     `<span class="sb-item">${esc(S.workspace || "默认工作区")}</span>` +
-    `<span class="sb-item">本次命中 <b>${hit}%</b></span>` +
+    `<span class="sb-item">本次命中 <b>${hasUsage ? hit + "%" : "—"}</b></span>` +
     `<span class="sb-item">本次输出 <b>${fmtNum(u.completion_tokens || 0)}</b></span>` +
     `<span class="sb-item">本次费用 <b>${fmtCost(u.cost || 0, u.currency)}</b></span>`;
   right.innerHTML =
@@ -2457,10 +2476,18 @@ function applySessionUsage(sess) {
   const lu = (sess && sess.meta && sess.meta.last_usage) || null;
   const ctxPrompt = lu ? Number(lu.prompt_tokens || 0) : used;
   const ctxCached = lu ? Number(lu.cached_tokens || 0) : 0;
+  // ★ 未命中量一并取回：重开会话时命中率仍按「命中 /（命中 + 未命中）」算，
+  //   不必拿 prompt 反推（反推在不同供应商下口径不一）。
+  const ctxMiss = lu
+    ? ((lu.cache_miss_tokens != null)
+        ? Number(lu.cache_miss_tokens)
+        : Math.max(0, ctxPrompt - ctxCached))
+    : 0;
   S.turnUsage = Object.assign({}, S.turnUsage || {}, {
     // prompt_tokens = 上下文占用读数（取该会话最近一次调用的输入量）
     prompt_tokens: ctxPrompt,
     cached_tokens: ctxCached,
+    cache_miss_tokens: ctxMiss,
     // 累计口径：会话指标里的「累计 tokens」用它
     acc_prompt_tokens: used,
     completion_tokens: out,
@@ -2791,6 +2818,7 @@ async function send() {
   renderAtts();
   S.streaming = true;
   S._cancelled = false;   // 新一轮开始：清掉上一轮的「用户已停止」标记
+  S._cancelledTurn = false;  // ★ 同步复位「本轮被停过」标记，否则一次停止会永久禁用补发
   S._phase = "busy";      // 状态行：运行中
   $("#send-btn").disabled = true;
   $("#stop-btn").style.display = "";
@@ -2857,6 +2885,12 @@ async function send() {
     get buf() { return streamBuf; }, set buf(v) { streamBuf = v; },
     finish: null, paint: paintStream, reasoningBox: null, toolTimes, t0,
     turnFiles: [],   // 本回合工具产出的真实文件路径（收尾时提示「文件已生成在 X」）
+    // ★ 补发兜底的归属依据（实测「强行停止后，上一轮的回答又冒出来一遍」）：
+    //   后端写库是 `if content:`（core/agent.py）—— 被中断的那一轮没有正文就不落库。
+    //   而补发兜底若只找「最后一条有内容的 assistant 消息」，捞到的必然是上一轮的，
+    //   贴到界面上就成了「我发的明明是自行车，它却把上一句你好又贴了一遍」。
+    //   所以这里记下「本轮是否被主动停止」：停止的回合没有最终交付文字，一律不补。
+    _cancelledTurn: false,
   };
   // ★ 这条流「声明归属」的会话：本轮请求发出的那个会话 id。
   //   必须在发请求时冻结下来，之后**不随 S.sessionId 变化** —— 实测
@@ -3058,6 +3092,11 @@ function lastAssistNode() {
     ★ 后端 agent 跑完一定会把最终 assistant 消息写库（core/agent.py 收尾段）。
       前端缺 result 时界面就只有半截、甚至空白 —— 实测「他做完了却没有输出
       收尾文字，我还以为一直没做完」。这里按会话记录补上。
+    ★★ 归属校验（实测「强行停止后，上一轮的回答又冒出来一遍」）：
+      后端写库是 `if content:`（core/agent.py）—— 被中断的那一轮**没有正文就不写库**。
+      而这里若只找「最后一条有内容的 assistant 消息」，**捞到的必然是上一轮的**，
+      补到界面上就成了「我发的明明是自行车，它却把上一句你好又贴了一遍」。
+      所以补发必须以**本轮**为准：只有本轮自己产出了文字才补，否则一律不补。
     ★ 去重（实测「发你好输出两次、重启才变一次」三道闸）：
       ①本轮只要出现过任何正文（c._sawAssistantText）→ 不补；
       ②本轮已补过（c._recovered）→ 不补；
@@ -3065,6 +3104,10 @@ function lastAssistNode() {
 async function recoverFinalText(c) {
   if (!S.sessionId) return false;
   if (c && (c._recovered || c._sawAssistantText)) return false;
+  // ★ 被主动停止的本轮**一律不补**：停止的回合没有「最终交付文字」可言，
+  //   后端也不为它落库（core/agent.py 的 `if content:`），硬补只会把
+  //   上一轮的旧回答翻出来重贴一遍 —— 实测「发的自行车，却冒出上一句你好」。
+  if (S._cancelledTurn) return false;
   try {
     const d = await api("/api/sessions/" + encodeURIComponent(S.sessionId) + "?limit=40");
     const msgs = d.messages || [];
@@ -3383,6 +3426,11 @@ function handleEvent(ev, c) {
         acc_cached_tokens: u.cached_tokens || 0,
         prompt_tokens: lu.prompt_tokens || 0,
         cached_tokens: lu.cached_tokens || 0,
+        // ★ 未命中量：命中率的分母（命中 + 未命中）。上游未回时按差值兜底，
+        //   与后端 llm/base.py 的解析口径保持一致。
+        cache_miss_tokens: (lu.cache_miss_tokens != null)
+          ? Number(lu.cache_miss_tokens)
+          : Math.max(0, Number(lu.prompt_tokens || 0) - Number(lu.cached_tokens || 0)),
         completion_tokens: u.completion_tokens || 0,
         reasoning_tokens: u.reasoning_tokens || 0,
         cost: d.cost || 0,
@@ -4056,6 +4104,10 @@ inputEl.addEventListener("keydown", (e) => {
 $("#send-btn").onclick = send;
 $("#stop-btn").onclick = async () => {
   S._cancelled = true;   // 用户主动停止：断线重试逻辑据此放弃重发
+  // ★ 标记「本轮是被停的」：收尾补发兜底据此拒绝补写（见 recoverFinalText）。
+  //   停掉的回合没有「最终交付文字」，后端也不会为它落库（core/agent.py 的 `if content:`），
+  //   补发只会把上一轮的回答翻出来重贴一遍 —— 实测「发的自行车，却冒出上一句你好」。
+  S._cancelledTurn = true;
   // ★ 先**就地**断开前端的流式连接，界面立刻停下来；再通知后端取消这一轮。
   try { if (S.abort) S.abort.abort(); } catch (e) {}
   setStatus("ok", "已停止");
@@ -5597,32 +5649,6 @@ PAGES.settings = async () => {
         </div>
       </div>
 
-      <div class="card"><h3>分层记忆</h3>
-        <label class="switch"><input type="checkbox" id="m-long"${mem.long_term_enabled !== false ? " checked" : ""}>
-          长期记忆<span class="hint">稳定事实与偏好，长期保留</span></label><br>
-        <label class="switch"><input type="checkbox" id="m-epi"${mem.episodic_enabled !== false ? " checked" : ""}>
-          情景记忆<span class="hint">「某次发生了什么」</span></label><br>
-        <label class="switch"><input type="checkbox" id="m-prof"${mem.profile_enabled !== false ? " checked" : ""}>
-          用户画像<span class="hint">从对话中归纳你的习惯</span></label>
-        <label class="switch" style="margin-top:8px"><input type="checkbox" id="m-auto"${mem.auto_summarize !== false ? " checked" : ""}>
-          自动归纳<span class="hint">闲置时把本轮要点提炼成记忆</span></label>
-      </div>
-
-      <div class="card"><h3>召回</h3>
-        <div class="grid c3">
-          <div class="field"><label>短期记忆轮数</label>
-            <input type="number" id="m-turns" min="0" max="500" value="${mem.short_term_max_turns != null ? mem.short_term_max_turns : 60}"></div>
-          <div class="field"><label>每次召回条数</label>
-            <input type="number" id="m-top" min="1" max="50" value="${mem.recall_top_k != null ? mem.recall_top_k : 6}"></div>
-          <div class="field"><label>召回最低分<span class="hint">0~1，越高越严格</span></label>
-            <input type="number" id="m-minscore" step="0.01" min="0" max="1" value="${mem.recall_min_score != null ? mem.recall_min_score : 0.22}"></div>
-        </div>
-        <label class="switch" style="margin-top:8px"><input type="checkbox" id="m-vec"${mem.use_vector !== false ? " checked" : ""}>
-          向量检索（密钥不可用时自动降级为本地检索）</label>
-        <div class="field" style="margin-top:10px"><label>遗忘半衰期<span class="hint">天数，越久越不容易被淡忘</span></label>
-          <input type="number" id="m-decay" min="1" max="3650" value="${mem.decay_half_life_days != null ? mem.decay_half_life_days : 45}"></div>
-      </div>
-
       <div class="card"><h3>记忆条目<span class="hint" id="m-count"></span></h3>
         <div class="help" style="margin-bottom:9px">
           这里是 AI 实际保存下来的长期记忆，跨对话生效。可以搜索、查看修订历史、删除。
@@ -5634,6 +5660,46 @@ PAGES.settings = async () => {
         </div>
         <div id="m-list" class="help">正在读取…</div>
       </div>
+
+      <!-- ★ 记忆的细分设置默认收起（实测反馈：一屏塞满「召回最低分」「遗忘半衰期」
+           这类没设过也不懂含义的旋钮，反而看不到「它到底记住了什么」——而那才是
+           这一页真正要看的东西）。默认值本来就够用，需要微调的人再展开即可。 -->
+      <details class="prov-more" style="margin-top:0">
+        <summary>细分设置（一般不用改）</summary>
+
+        <div class="card" style="margin-top:10px"><h3>分层记忆</h3>
+          <label class="switch"><input type="checkbox" id="m-long"${mem.long_term_enabled !== false ? " checked" : ""}>
+            长期记忆<span class="hint">稳定事实与偏好，长期保留</span></label><br>
+          <label class="switch"><input type="checkbox" id="m-epi"${mem.episodic_enabled !== false ? " checked" : ""}>
+            情景记忆<span class="hint">「某次发生了什么」</span></label><br>
+          <label class="switch"><input type="checkbox" id="m-prof"${mem.profile_enabled !== false ? " checked" : ""}>
+            用户画像<span class="hint">从对话中归纳你的习惯</span></label>
+          <label class="switch" style="margin-top:8px"><input type="checkbox" id="m-auto"${mem.auto_summarize !== false ? " checked" : ""}>
+            自动归纳<span class="hint">闲置时把本轮要点提炼成记忆</span></label>
+        </div>
+
+        <div class="card"><h3>召回<span class="hint">记忆怎么被挑出来给 AI 用</span></h3>
+          <div class="help" style="margin-bottom:9px">
+            每轮对话都会从已有记忆里挑几条相关的交给 AI。下面是挑选规则：
+            「轮数」决定回看多久的对话，「条数」决定最多挑几条，
+            「最低分」是相关度门槛（设 0 等于不设门槛，任何记忆都可能被选中）。
+          </div>
+          <div class="grid c3">
+            <div class="field"><label>短期记忆轮数<span class="hint">回看最近几轮对话</span></label>
+              <input type="number" id="m-turns" min="0" max="500" value="${mem.short_term_max_turns != null ? mem.short_term_max_turns : 60}"></div>
+            <div class="field"><label>每次召回条数<span class="hint">最多挑几条记忆</span></label>
+              <input type="number" id="m-top" min="1" max="50" value="${mem.recall_top_k != null ? mem.recall_top_k : 6}"></div>
+            <div class="field"><label>召回最低分<span class="hint">0~1，越高越严格；0 = 不限</span></label>
+              <input type="number" id="m-minscore" step="0.01" min="0" max="1" value="${mem.recall_min_score != null ? mem.recall_min_score : 0.22}"></div>
+          </div>
+          <label class="switch" style="margin-top:8px"><input type="checkbox" id="m-vec"${mem.use_vector !== false ? " checked" : ""}>
+            向量检索</label>
+          <div class="help" style="margin-top:4px">按「意思相近」找，而不是「字面相同」；密钥不可用时自动降级为本地关键词检索。</div>
+          <div class="field" style="margin-top:10px"><label>遗忘半衰期<span class="hint">天数，越久越不容易被淡忘</span></label>
+            <input type="number" id="m-decay" min="1" max="3650" value="${mem.decay_half_life_days != null ? mem.decay_half_life_days : 45}"></div>
+          <div class="help" style="margin-top:4px">旧记忆会随时间推移逐渐降权，超过这个天数后权重减半。</div>
+        </div>
+      </details>
     </div>
     <div id="set-safety" class="set-pane" style="display:none">
       <div class="card"><h3>权限等级</h3>

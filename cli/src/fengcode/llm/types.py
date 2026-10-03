@@ -327,6 +327,14 @@ class Usage:
     total_tokens: int = 0
     cached_tokens: int = 0
     reasoning_tokens: int = 0
+    # ★ 未命中缓存的输入量。
+    #   为什么要单独留一个字段、而不是用 prompt - cached 反推：
+    #   命中率的分母必须是「真正计过价的输入」（命中 + 未命中），而 prompt_tokens
+    #   在不同供应商那里口径不一（有的含命中部分，有的另有字段）。
+    #   分开记之后，命中率 = 命中 /（命中 + 未命中），口径可直接核对，
+    #   也能算出「没命中的那部分多花了多少钱」。上游不返回时保持 0，
+    #   由调用方按「未报即未知」处理，不硬凑。
+    cache_miss_tokens: int = 0
 
     def add(self, other: "Usage") -> "Usage":
         return Usage(
@@ -335,6 +343,7 @@ class Usage:
             total_tokens=self.total_tokens + other.total_tokens,
             cached_tokens=self.cached_tokens + other.cached_tokens,
             reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
+            cache_miss_tokens=self.cache_miss_tokens + other.cache_miss_tokens,
         )
 
     def to_dict(self) -> dict[str, int]:
@@ -344,6 +353,7 @@ class Usage:
             "total_tokens": self.total_tokens,
             "cached_tokens": self.cached_tokens,
             "reasoning_tokens": self.reasoning_tokens,
+            "cache_miss_tokens": self.cache_miss_tokens,
         }
 
 

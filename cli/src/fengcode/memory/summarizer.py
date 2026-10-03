@@ -130,8 +130,20 @@ async def summarize(
     model: str | None = None,
     max_words: int = 800,
     timeout: float = 120.0,
+    prefix: list[Message] | None = None,
+    tools: list[Any] | None = None,
 ) -> dict[str, Any]:
-    """调用模型生成摘要。返回 ``{text, usage, ok, error}``。"""
+    """调用模型生成摘要。返回 ``{text, usage, ok, error}``。
+
+    ★ ``prefix`` / ``tools``：让这次摘要调用**复用主对话的缓存前缀**。
+      摘要调用本身也要花一次模型费用。若把「主对话的 system 提示 + 工具定义」
+      原样带上，再在其后追加「待压缩的历史 + 压缩指令」，这次请求就成了主对话
+      请求的一个**真前缀**，可以直接命中上游的前缀缓存 —— 只有末尾的压缩指令
+      是全新输入。不带前缀则整段都要按未命中计价（实测差异可达数倍）。
+
+      为什么工具定义也要带：它在请求体的前缀里，漏掉就与主对话的字节对不上，
+      缓存自然无从命中。
+    """
     history = render_messages(messages)
     if not history.strip():
         return {"text": "", "ok": True, "usage": None, "error": None}
@@ -139,10 +151,13 @@ async def summarize(
     if llm is None:
         return {"text": fallback_summary(messages), "ok": False, "usage": None,
                 "error": "未配置模型，使用兜底摘要"}
+    # ★ 组装顺序即缓存顺序：主对话前缀（system + 工具）在前，新内容在最后。
+    head: list[Message] = list(prefix or [])
     try:
         resp = await llm.chat(
-            [Message.system("你是一个精确的信息压缩器。"), Message.user(prompt)],
+            [*head, Message.system("你是一个精确的信息压缩器。"), Message.user(prompt)],
             model=model,
+            tools=tools or None,
             max_tokens=max(512, min(4096, max_words * 3)),
             temperature=0.1,
         )
@@ -193,6 +208,8 @@ async def summarize_chunked(
     chunk_tokens: int = 24_000,
     overlap: int = 2,
     fanout: int = 4,
+    prefix: list[Message] | None = None,
+    tools: list[Any] | None = None,
 ) -> dict[str, Any]:
     """分块重放 + **树形归并**的压缩。
 
@@ -203,6 +220,10 @@ async def summarize_chunked(
       1. 按 token 分块（带重叠），**每块单独摘要** —— 单块失败只影响那一块；
       2. 块摘要若还有多个，按 fanout 多路**逐层归并**（树），直到只剩一条。
 
+    ★ ``prefix`` / ``tools`` 透传给每次摘要调用，用于**复用主对话的缓存前缀**
+      （含义见 ``summarize``）。首块摘要带上前缀最划算 —— 它就是主对话的真前缀；
+      后续块与归并轮次同样带上，多一层命中机会，不命中也没有额外损失。
+
     返回结构与 `summarize` 一致：``{text, ok, usage, error}``。
     """
     if not messages:
@@ -212,13 +233,15 @@ async def summarize_chunked(
     )
     # 小到一次能装下 → 直接用原有单次摘要，别把简单事复杂化
     if total <= chunk_tokens:
-        return await summarize(messages, llm, model=model, max_words=max_words)
+        return await summarize(messages, llm, model=model, max_words=max_words,
+                               prefix=prefix, tools=tools)
 
     chunks = split_by_tokens(messages, chunk_tokens=chunk_tokens, overlap=overlap)
     parts: list[str] = []
     degraded = False
     for i, ch in enumerate(chunks, 1):
-        r = await summarize(ch, llm, model=model, max_words=max(200, max_words // 2))
+        r = await summarize(ch, llm, model=model, max_words=max(200, max_words // 2),
+                            prefix=prefix, tools=tools)
         if not r.get("ok"):
             degraded = True
         txt = (r.get("text") or "").strip()
@@ -242,6 +265,7 @@ async def summarize_chunked(
                 llm,
                 model=model,
                 max_words=max(300, max_words),
+                prefix=prefix, tools=tools,
             )
             if not r.get("ok"):
                 degraded = True
@@ -398,6 +422,30 @@ def should_proceed(
     return progress >= minimum_progress, progress
 
 
+def summary_is_smaller(
+    summary_tokens: int, shadowed_tokens: int
+) -> tuple[bool, str]:
+    """★ 摘要净收益校验：摘要本身必须**比被压掉的内容小**。
+
+    为什么单靠 `should_proceed` 不够：那是拿「整段压缩前后的总账」比，
+    只保证总体变小。但完全可能出现——总账变小了，而**摘要这一块本身**
+    比它顶替掉的内容还长（摘要写得啰嗦、或原内容本来就不长）。
+    那种情况下这次摘要调用纯属白花钱，还把信息换成了更长的一段文字。
+
+    这里把「摘要」与「被它顶替的内容」单独比一次，把这种情形挡在替换之前。
+
+    返回 ``(是否通过, 说明)``。
+    """
+    if shadowed_tokens <= 0:
+        # 没有可比较的基数（内容为空）→ 无从判断，不拦。
+        return True, ""
+    if summary_tokens >= shadowed_tokens:
+        return False, (
+            f"摘要未变短（摘要约 {summary_tokens} tokens ≥ 被压内容约 {shadowed_tokens} tokens）"
+        )
+    return True, ""
+
+
 # ---- 结构化压缩：丢弃「已被取代的状态块」---------------------------------
 # ★ 要解决什么：长会话里同一份状态会被反复重述 ——
 #   比如「待办清单」「当前计划」「某文件的内容」在每一轮都完整贴一遍。
@@ -489,6 +537,7 @@ __all__ = [
     "split_by_tokens",
     "should_compact",
     "should_proceed",
+    "summary_is_smaller",
     "detect_trigger",
     "mask_observations",
     "drop_superseded_blocks",

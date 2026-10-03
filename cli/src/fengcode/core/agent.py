@@ -39,6 +39,7 @@ from ..memory.summarizer import (
     split_for_compaction,
     summarize,
     summarize_chunked,
+    summary_is_smaller,
 )
 from ..security.approval import ApprovalGate
 from ..security.paths import PathGuard
@@ -370,7 +371,7 @@ class Agent:
         msgs.extend(m for m in history if m.role != "system")
         # ★ 缓存优化：把「当前时间」这类每轮都变的信息放在**尾部**（而不是系统提示里）。
         #   前缀保持逐字节稳定 → provider 的 prompt cache 才能命中（输入便宜 ~90%）。
-        #   参考 Anthropic「static 在前、dynamic 在后」与 Claude Code 的 <system-reminder> 做法。
+        #   做法：静态内容集中在前、动态内容一律后置，时间提醒作为尾部独立消息注入。
         try:
             import datetime as _dt
 
@@ -498,6 +499,15 @@ class Agent:
         #   若摘要失败/超时：`summarize` 内部会返回 fallback 摘要并带 ok=False，
         #   **绝不退回有损截断** —— 保底是「原样返回 msgs」，让这一轮照常跑，
         #   下轮再试压缩，而不是把历史切掉一半导致模型失忆。
+        # ★ 摘要调用复用主对话的缓存前缀（省一次全价调用）。
+        #   把「主对话开头的系统提示 + 工具定义」原样放在最前，压缩指令缀在最后，
+        #   这次请求就成了主对话请求的一个真前缀，可直接命中上游前缀缓存。
+        #   工具定义必须一起带：它在请求体前缀里，漏掉就与主对话的字节对不上。
+        cache_prefix = list(systems)
+        try:
+            cache_tools = self.tool_specs()
+        except Exception:
+            cache_tools = []
         try:
             result = await asyncio.wait_for(
                 # ★ 2-B：历史长时走「分块重放 + 树形归并」，避免一次摘要吃不下整段
@@ -505,6 +515,7 @@ class Agent:
                 summarize_chunked(
                     middle, self.llm, model=None, max_words=800,
                     chunk_tokens=int(getattr(cfg.llm, "compact_chunk_tokens", 24000) or 24000),
+                    prefix=cache_prefix, tools=cache_tools,
                 ),
                 timeout=300.0,
             )
@@ -542,6 +553,26 @@ class Agent:
             meta={"compacted": True, "original_messages": len(middle)},
         )
         candidate = [*systems, summary_msg, *recent]
+
+        # ★ 摘要净收益校验：摘要本身必须比被它顶替掉的内容短。
+        #   为什么单靠下面的 should_proceed 不够：那比的是「整段压缩前后的总账」，
+        #   只保证总体变小。但摘要完全可能比它顶替的内容还长（写得啰嗦、或原内容
+        #   本来就不长），此时这次摘要调用纯属白花钱，还把信息换成了更长的一段。
+        #   强制压缩（用户主动点的）不受此限 —— 他要的是「看到效果」。
+        summary_tok = estimate_tokens(summary_msg.content or "")
+        shadowed_tok = sum(
+            estimate_tokens(m.content or "") + estimate_tokens(m.reasoning or "")
+            for m in middle
+        )
+        small_ok, small_why = summary_is_smaller(summary_tok, shadowed_tok)
+        if not small_ok and not force:
+            self.bus.emit(
+                Ev.LOG,
+                {"level": "info",
+                 "message": f"{small_why}，本次不压缩（保留原文，下轮再试）"},
+                session_id=session_id,
+            )
+            return msgs
 
         # 收益检查：缩减不足 minimum_progress 就放弃（除非强制）
         after_tokens = sum(
@@ -652,7 +683,7 @@ class Agent:
         #   的根因。这里记下来，收尾时若 content 与「已流式交付的文字」一致，就不再重复交付。
         streamed_text_len = 0
         total_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
-                       "cached_tokens": 0, "reasoning_tokens": 0}
+                       "cached_tokens": 0, "reasoning_tokens": 0, "cache_miss_tokens": 0}
         # 最后一次调用的用量（上下文占用 / 命中率 / 输出速度都用它，不用累加值）
         last_usage: dict[str, int] = {}
         cost_sum = 0.0
@@ -737,12 +768,15 @@ class Agent:
                     "total_tokens": u.total_tokens or (u.prompt_tokens + u.completion_tokens),
                     "cached_tokens": u.cached_tokens,
                     "reasoning_tokens": u.reasoning_tokens,
+                    # ★ 未命中量：命中率的分母用它 + cached，口径才可核对
+                    "cache_miss_tokens": u.cache_miss_tokens,
                 }
                 total_usage["prompt_tokens"] += u.prompt_tokens
                 total_usage["completion_tokens"] += u.completion_tokens
                 total_usage["total_tokens"] += u.total_tokens or (u.prompt_tokens + u.completion_tokens)
                 total_usage["cached_tokens"] += u.cached_tokens
                 total_usage["reasoning_tokens"] += u.reasoning_tokens
+                total_usage["cache_miss_tokens"] += u.cache_miss_tokens
             # 成本
             try:
                 from ..llm.router import compute_cost
@@ -902,13 +936,16 @@ class Agent:
 
             # 每轮工具执行完就把最新用量广播出去：界面上的「上下文占用 / 输出速度」
             # 才能在回合进行中实时更新，而不是等整个回合结束才一次性跳变。
-            if last_usage:
-                self.bus.emit(
-                    Ev.USAGE,
-                    {"usage": total_usage, "last_usage": last_usage,
-                     "cost": cost_sum, "currency": currency},
-                    session_id=sid,
-                )
+            # ★ 不再用 `if last_usage:` 包着：第一次调用还没成功就被用户停止时，
+            #   last_usage 是空的 —— 若因此不发，界面会一直留着**上一轮**的旧读数
+            #   （实测「发了新消息，右上角还是老数字 / 停在 0」）。
+            #   发出去让前端按「有无数据」自行显示数字或占位符。
+            self.bus.emit(
+                Ev.USAGE,
+                {"usage": total_usage, "last_usage": last_usage,
+                 "cost": cost_sum, "currency": currency},
+                session_id=sid,
+            )
 
             if result.stopped:
                 break
@@ -1001,7 +1038,12 @@ class Agent:
         result.reasoning = reasoning
         result.steps = step
         result.usage = total_usage
-        result.last_usage = last_usage or dict(total_usage)
+        # ★ 上下文占用 / 命中率取「最后一次上游调用」的快照。
+        #   不能回退到 total_usage：那是**本回合累加值**（一轮工具循环会把同一份
+        #   上下文向上游重发十几次），拿它当占用会显示成远大于真实上下文的天文数字。
+        #   上游一次都没返回用量时（例如刚发出去就被停止），这里是空 dict ——
+        #   前端据此显示「— / 尚无调用记录」，而不是伪装成一个 0 或旧数字。
+        result.last_usage = last_usage
         result.currency = currency
         result.duration = time.time() - t0
         # 告诉前端「这段正文你已经在流式阶段画过了」→ 前端据此只收尾、不重绘。

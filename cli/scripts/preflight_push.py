@@ -50,7 +50,7 @@ SECRET_PATTERNS = [
 #     · 取不到就跳过（不报错，不阻断）。
 #   ★ 绝不要把真实口令写回本文件。
 def _load_local_secrets() -> list[tuple[str, str]]:
-    """从 %APPDATA%\\reasonix\\.env 与进程环境读敏感值，用于本地检测。
+    """从本机配置目录下的 .env 与进程环境读敏感值，用于本地检测。
 
     ★ 不写任何具体键名 —— 旧版把 4 个键名（含主机 ID 片段）硬编码在这里，
       等于把「基础设施结构」也一起公开了。现改为**按关键词动态筛选**：
@@ -67,8 +67,12 @@ def _load_local_secrets() -> list[tuple[str, str]]:
         if v and any(h in k.upper() for h in HINT):
             vals[k] = v
 
-    envp = _P(os.environ.get("APPDATA", "")) / "reasonix" / ".env"
-    if envp.is_file():
+    # 本机 .env 的位置：优先取显式配置的环境变量，否则用本地约定目录。
+    # 本机 .env 的位置：只认显式配置的目录，不写死任何产品名。
+    #   取不到就直接跳过（检测能力降级，但不报错、不阻断）。
+    _env_dir = (os.environ.get("FENGCODE_ENV_DIR") or "").strip()
+    envp = _P(_env_dir) / ".env" if _env_dir else None
+    if envp is not None and envp.is_file():
         try:
             for line in envp.read_text(encoding="utf-8", errors="replace").splitlines():
                 line = line.strip()

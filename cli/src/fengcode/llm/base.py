@@ -509,7 +509,21 @@ def parse_usage_openai(u: dict[str, Any] | None) -> Usage:
     cached = int(details.get("cached_tokens") or u.get("prompt_cache_hit_tokens") or 0)
     cdetails = u.get("completion_tokens_details") or {}
     reasoning = int(cdetails.get("reasoning_tokens") or 0)
-    return Usage(prompt, completion, total, cached, reasoning)
+    # ★ 未命中量：优先取上游明确给出的字段；上游没给就按「输入 - 命中」推算。
+    #   为什么要留一个推算的兜底：多数 OpenAI 兼容端点只回 prompt_tokens 与
+    #   命中量，不回未命中量。缺了它命中率就只能拿 prompt 当分母 —— 而 prompt
+    #   在部分供应商那里本身就等于「命中 + 未命中」，在另一些那里只算未命中，
+    #   口径不一。这里统一成「真计过价的输入」，命中率才可比。
+    miss_raw = (
+        details.get("cache_miss_tokens")
+        or u.get("prompt_cache_miss_tokens")
+        or u.get("cache_miss_tokens")
+    )
+    if miss_raw is not None:
+        cache_miss = int(miss_raw)
+    else:
+        cache_miss = max(0, prompt - cached)
+    return Usage(prompt, completion, total, cached, reasoning, cache_miss)
 
 
 __all__ = [

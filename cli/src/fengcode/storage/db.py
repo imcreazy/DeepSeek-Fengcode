@@ -161,6 +161,7 @@ DDL_STATEMENTS: list[str] = [
         output_tokens INTEGER NOT NULL DEFAULT 0,
         cached_tokens INTEGER NOT NULL DEFAULT 0,
         reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
         cost          REAL NOT NULL DEFAULT 0,
         currency      TEXT NOT NULL DEFAULT '¥',
         duration      REAL NOT NULL DEFAULT 0,
@@ -474,6 +475,9 @@ class Database:
             "usage_log": {
                 "cached_tokens": "INTEGER NOT NULL DEFAULT 0",
                 "reasoning_tokens": "INTEGER NOT NULL DEFAULT 0",
+                # ★ 未命中缓存的输入量：命中率按「命中 /（命中 + 未命中）」核账。
+                #   老库靠这条迁移补列，历史行取默认 0（表示「当时没记录」）。
+                "cache_miss_tokens": "INTEGER NOT NULL DEFAULT 0",
                 "kind": "TEXT NOT NULL DEFAULT 'chat'",
             },
             "jobs": {
