@@ -711,7 +711,8 @@ const SETTINGS_NAV = [
   { id: "subagents", label: "子智能体", icon: "users", desc: "内置预设、并行派生与预算", page: "subagents" },
   { id: "plugins", label: "插件", icon: "puzzle", desc: "扩展工具与钩子", page: "plugins" },
   { group: "记忆与上下文" },
-  { id: "memory", label: "记忆", icon: "brain", desc: "记忆条目、召回设置、指令文件" },
+  { id: "memory", label: "记忆", icon: "brain", desc: "记忆条目、召回设置、指令文件",
+    page: "settings", tab: "memory" },
   { group: "自动化与开发者" },
   { id: "jobs", label: "定时任务", icon: "clock", desc: "cron 定时执行", page: "jobs" },
   { id: "audit", label: "审计日志", icon: "clipboard", desc: "操作留痕，密钥已脱敏", page: "audit" },
@@ -814,6 +815,10 @@ async function renderNav() {
     html += `</div>`;
   }
   nav.innerHTML = html;
+
+  // ★ 重绘后重新套用会话搜索词：会话列表每次刷新（新建/删除/切换）都会重建 DOM，
+  //   不在这里补一次，搜索框里的词就会被「重置成显示全部」，看起来像搜索失效。
+  try { applySessionFilter(); } catch (e) {}
 
   // 绑定：新建空白项目
   const nw = $("#new-ws-btn", nav);
@@ -2445,11 +2450,20 @@ async function loadSession(sid) {
 function applySessionUsage(sess) {
   const used = Number((sess && sess.input_tokens) || 0);
   const out = Number((sess && sess.output_tokens) || 0);
+  // ★ 上下文占用 / 命中率必须取「最后一次调用」的快照（后端存在 meta.last_usage）：
+  //   sessions.input_tokens 是**累计值**（一场对话总共消耗），一轮工具循环会把同一份
+  //   上下文向上游重发十几次，拿累计值当占用会显示成远大于真实上下文的天文数字。
+  //   没有快照（旧数据）时才退回累计值，保证不显示成空白。
+  const lu = (sess && sess.meta && sess.meta.last_usage) || null;
+  const ctxPrompt = lu ? Number(lu.prompt_tokens || 0) : used;
+  const ctxCached = lu ? Number(lu.cached_tokens || 0) : 0;
   S.turnUsage = Object.assign({}, S.turnUsage || {}, {
     // prompt_tokens = 上下文占用读数（取该会话最近一次调用的输入量）
-    prompt_tokens: used,
+    prompt_tokens: ctxPrompt,
+    cached_tokens: ctxCached,
+    // 累计口径：会话指标里的「累计 tokens」用它
+    acc_prompt_tokens: used,
     completion_tokens: out,
-    // 累计口径在切会话时一并复位，避免把上一会话的用量混进来
     total_tokens: used + out,
     cost: Number((sess && sess.cost) || 0),
   });
@@ -3480,6 +3494,26 @@ function handleEvent(ev, c) {
       // ★ 回合结束兜底刷新待办面板：task.update 事件可能丢失/晚到，
       //   不补这一次的话面板会停在上一步（实测「进度卡住不刷新」）。
       try { refreshTodosSoon(); } catch (e) {}
+      // ★ 回合结束兜底刷新用量读数：usage 事件可能被会话归属校验丢弃、
+      //   也可能在收尾时晚到。不补这一次，状态栏就会停在「上下文 0 / 命中 0%」，
+      //   即使这轮明明已经消耗了 token。
+      try {
+        const du = (d.data && d.data.last_usage) || (d.data && d.data.usage) || null;
+        if (du && (du.prompt_tokens || du.completion_tokens)) {
+          S.turnUsage = Object.assign({}, S.turnUsage || {}, {
+            prompt_tokens: du.prompt_tokens || 0,
+            cached_tokens: du.cached_tokens || 0,
+            completion_tokens: (d.data.usage || {}).completion_tokens || du.completion_tokens || 0,
+            total_tokens: (d.data.usage || {}).total_tokens || du.total_tokens || 0,
+            acc_prompt_tokens: (d.data.usage || {}).prompt_tokens || 0,
+            acc_cached_tokens: (d.data.usage || {}).cached_tokens || 0,
+            cost: (d.data && d.data.cost) || 0,
+            currency: (d.data && d.data.currency) || "",
+          });
+          renderStatusBar();
+          renderInfoPanel();
+        }
+      } catch (e) {}
       const meta = c.assist && c.assist.closest(".msg").querySelector(".meta");
       if (meta && d.data) {
         if (d.data.error) {
@@ -5590,6 +5624,9 @@ PAGES.settings = async () => {
       </div>
 
       <div class="card"><h3>记忆条目<span class="hint" id="m-count"></span></h3>
+        <div class="help" style="margin-bottom:9px">
+          这里是 AI 实际保存下来的长期记忆，跨对话生效。可以搜索、查看修订历史、删除。
+        </div>
         <div class="row" style="margin-bottom:9px">
           <input type="text" id="m-search" placeholder="搜索记忆…" style="flex:1">
           <button class="btn" id="m-reload">刷新</button>
@@ -6793,6 +6830,17 @@ function paintIcons() {
   set("#mode-chip-ic", "compass", 13);
   set("#perm-chip-ic", "shield", 13);
   set("#send-ic", "arrowUp", 15);
+  // ★ 浏览器控制条的 5 个图标按钮：HTML 里是空标签，图标全靠这里补。
+  //   之前漏了这一组，界面上只剩 5 个没有内容的圆形底座 —— 看起来像一排
+  //   莫名其妙的圆圈，而且用户根本认不出哪个是后退、哪个是刷新。
+  set("#bw-back", "chevronLeft", 15);
+  set("#bw-forward", "chevronRight", 15);
+  set("#bw-reload", "refresh", 15);
+  set("#bw-go", "arrowUp", 15);
+  set("#bw-close", "close", 15);
+  // 侧栏会话搜索框里的放大镜与清除按钮
+  set("#side-search-ic", "search", 14);
+  set("#side-search-clear", "close", 13);
 }
 
 /* ==========================================================================
@@ -7247,8 +7295,6 @@ const BrowserTab = {
       this.hint("已关闭网页。输入网址可再次打开。");
       this.setNav(false, false);
     };
-    $("#bw-read").onclick = () => this.readIntoChat();
-    $("#bw-shot").onclick = () => this.shotIntoChat();
 
     // 窗口缩放 / 侧栏拖动时同步视图位置
     window.addEventListener("resize", () => this.syncBounds());
@@ -7300,50 +7346,14 @@ const BrowserTab = {
     if (el) el.textContent = text || "";
   },
 
-  /** 读取当前页正文 → 放进输入框（用户可直接编辑后再发，也可直接发送）。 */
-  async readIntoChat() {
+  /** 读取当前页正文（供 AI 调用时复用；界面已不再提供按钮）。 */
+  async readPage(maxChars) {
     const api = this.api;
-    if (!api) return;
-    const btn = $("#bw-read");
-    if (btn) { btn.disabled = true; btn.textContent = "读取中…"; }
+    if (!api) return { ok: false, error: "浏览器功能仅在桌面端可用" };
     try {
-      const r = await api.read(12000);
-      if (!r || !r.ok) { toast("读取失败：" + ((r && r.error) || "未知原因"), "err"); return; }
-      const inp = $("#input");
-      const head = `请阅读这个网页并帮我处理：${r.title || ""}\n${r.url}\n\n`;
-      const body = (r.text || "").trim();
-      if (!body) { toast("这个页面没有可读正文", "err"); return; }
-      inp.value = head + body + (r.truncated ? "\n\n（正文过长，已截断）" : "");
-      inp.dispatchEvent(new Event("input", { bubbles: true }));
-      inp.focus();
-      toast(`已放入输入框（${body.length} 字）`, "ok");
+      return await api.read(maxChars || 12000);
     } catch (e) {
-      toast("读取失败：" + ((e && e.message) || e), "err");
-    } finally {
-      if (btn) { btn.disabled = false; btn.textContent = "读取当前页正文"; }
-    }
-  },
-
-  /** 截图 → 作为图片附件挂到下一轮消息上。 */
-  async shotIntoChat() {
-    const api = this.api;
-    if (!api) return;
-    const btn = $("#bw-shot");
-    if (btn) { btn.disabled = true; btn.textContent = "截图中…"; }
-    try {
-      const r = await api.screenshot();
-      if (!r || !r.ok) { toast("截图失败：" + ((r && r.error) || "未知原因"), "err"); return; }
-      const name = `网页截图-${new Date().toISOString().slice(11, 19).replace(/:/g, "")}.png`;
-      S.attachments = S.attachments || [];
-      S.attachments.push({ kind: "image", name, mime: "image/png", dataUrl: r.dataUrl });
-      // ★ 函数名是 renderAtts（不是 renderAttachments）—— 后者根本不存在，
-      //   写错了会让附件加进去却界面上看不到（本文件 7763 行已记过同一个坑）。
-      try { renderAtts(); } catch (e) {}
-      toast("已作为图片附件加入，发送时随消息一起带给 AI", "ok");
-    } catch (e) {
-      toast("截图失败：" + ((e && e.message) || e), "err");
-    } finally {
-      if (btn) { btn.disabled = false; btn.textContent = "截图"; }
+      return { ok: false, error: String((e && e.message) || e) };
     }
   },
 };
@@ -7540,8 +7550,14 @@ function setupResizers() {
     // 谁在后谁赢，旧写法的内联宽度会被 .open 的固定值压住 —— 表现就是
     // 鼠标指针变成拖拽态、拖动却毫无反应（左栏因为改的是变量所以正常）。
     const setPanelWidth = (w) => {
-      const v = Math.round(Math.min(560, Math.max(240, w)));
+      // ★ 上限改为「屏幕宽度的一半」：右侧栏可以用来长时间放浏览器或项目文件，
+      //   固定 560px 在大屏上明显不够。下限保持 240px，避免拖成一条缝。
+      const maxW = Math.max(420, Math.floor(window.innerWidth / 2));
+      const v = Math.round(Math.min(maxW, Math.max(240, w)));
       document.documentElement.style.setProperty("--panel-w", v + "px");
+      // ★ 同时告诉中间对话区「侧栏占了多少」：会话区在侧栏变宽时要跟着收窄，
+      //   否则文字会被面板压住（面板是覆盖式定位）。见 CSS 的 --panel-w 用法。
+      document.documentElement.style.setProperty("--panel-reserve", v + "px");
       return v;
     };
     rr.onmousedown = (e) => {
@@ -7661,8 +7677,18 @@ function setupResizers() {
       if (n) setSideWidth(n);
     }
     const pw = localStorage.getItem("fg_panel_w");
-    // 恢复右侧栏宽度也走 CSS 变量（与拖拽时一致），写内联会被 .open 的宽度压住
-    if (pw && infopanel) document.documentElement.style.setProperty("--panel-w", pw);
+    // 恢复右侧栏宽度也走 CSS 变量（与拖拽时一致），写内联会被 .open 的宽度压住。
+    // ★ 必须按当前窗口再夹一次上限：换到更小的屏幕/窗口后，上次存的宽度可能
+    //   已经超过「屏幕一半」，直接用会把对话区挤没。
+    if (pw && infopanel) {
+      const n = parseInt(pw, 10);
+      if (n) {
+        const maxW = Math.max(420, Math.floor(window.innerWidth / 2));
+        const v = Math.round(Math.min(maxW, Math.max(240, n)));
+        document.documentElement.style.setProperty("--panel-w", v + "px");
+        document.documentElement.style.setProperty("--panel-reserve", v + "px");
+      }
+    }
     // 对话框宽度：用户拖过就以拖过的为准（覆盖设置里的标准/宽屏预设）
     const cw = localStorage.getItem("fg_chat_w");
     if (cw) document.documentElement.style.setProperty("--chat-max-w", cw);
@@ -7808,21 +7834,71 @@ async function refSession() {
 
 // 底部三个工具
 $("#tool-settings").onclick = () => { SS.current = "general"; go("settings"); };
+// 会话搜索：展开侧栏里的搜索框并聚焦。
+// 之前这里是 prompt() 弹窗——弹窗一关就看不到结果，也没法边改词边看筛选，
+// 点下去像没反应。改成内联搜索框，输入即筛，Esc 或清空即恢复全部。
+const SESSION_FILTER = { q: "" };
 $("#tool-search").onclick = () => {
-  // 简单实现：聚焦侧边栏并提示用户按标题找（会话列表本身可滚动）
-  const kw = prompt("搜索会话（按标题匹配）：", "");
-  if (kw === null) return;
-  const q = kw.trim().toLowerCase();
-  if (!q) { renderNav(); return; }
-  $$(".sess-item").forEach((b) => {
-    const t = (b.querySelector(".s-title")?.textContent || "").toLowerCase();
-    b.style.display = t.includes(q) ? "" : "none";
-  });
-  toast(`已筛选「${kw}」，点设置或新建可恢复`);
+  const box = $("#side-search");
+  if (!box) return;
+  if (box.hidden) {
+    box.hidden = false;
+    const inp = $("#side-search-input");
+    if (inp) { inp.value = SESSION_FILTER.q || ""; inp.focus(); inp.select(); }
+  } else {
+    // 已经展开时再点一次 = 收起并清空筛选
+    box.hidden = true;
+    SESSION_FILTER.q = "";
+    applySessionFilter();
+  }
 };
 $("#tool-clean").onclick = async () => {
   await openSessionTrash();
 };
+
+/** 按当前搜索词筛选侧栏会话（不改动数据，只切显示）。 */
+function applySessionFilter() {
+  const q = (SESSION_FILTER.q || "").trim().toLowerCase();
+  $$(".sess-item").forEach((b) => {
+    if (!q) { b.style.display = ""; return; }
+    const t = (b.querySelector(".s-title")?.textContent || "").toLowerCase();
+    b.style.display = t.includes(q) ? "" : "none";
+  });
+  // 项目分组标题：该组下一条会话都不剩时也藏起来，否则会留一串空标题
+  $$("#nav .ws-group").forEach((g) => {
+    const items = g.querySelectorAll(".sess-item");
+    if (!items.length) { g.style.display = ""; return; }
+    const anyVisible = Array.from(items).some((b) => b.style.display !== "none");
+    g.style.display = anyVisible ? "" : "none";
+  });
+}
+
+const ssi = $("#side-search-input");
+if (ssi) {
+  ssi.addEventListener("input", () => {
+    SESSION_FILTER.q = ssi.value || "";
+    applySessionFilter();
+  });
+  ssi.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      ssi.value = "";
+      SESSION_FILTER.q = "";
+      applySessionFilter();
+      const box = $("#side-search");
+      if (box) box.hidden = true;
+    }
+  });
+}
+const ssc = $("#side-search-clear");
+if (ssc) {
+  ssc.onclick = () => {
+    ssi.value = "";
+    SESSION_FILTER.q = "";
+    applySessionFilter();
+    ssi.focus();
+  };
+}
 setupResizers();
 setupComposer();
 // 思考块（原生 <details>）展开时定位到最新输出，而不是停在最早那几行。

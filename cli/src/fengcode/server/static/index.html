@@ -27,6 +27,13 @@
     </div>
 
     <!-- 工作区 + 会话列表 -->
+    <!-- 会话搜索：默认收起，点底部放大镜展开并聚焦。
+         为什么不弹 prompt()：弹窗会挡住界面、看不到筛出来的结果，也没法边看边改词。 -->
+    <div class="side-search" id="side-search" hidden>
+      <span class="ss-ic" id="side-search-ic"></span>
+      <input id="side-search-input" type="text" placeholder="搜索会话标题…" spellcheck="false" />
+      <button class="ss-clear" id="side-search-clear" title="清除"></button>
+    </div>
     <nav class="side-nav" id="nav"></nav>
 
     <!-- 底部：搜索 / 清理 / 设置 -->
@@ -171,12 +178,6 @@
           </div>
           <div class="bw-status" id="bw-status"></div>
           <div class="web-stage" id="web-stage"></div>
-          <div class="bw-actions">
-            <button class="btn sm" id="bw-read" title="把当前页正文放进对话，让 AI 阅读">
-              读取当前页正文
-            </button>
-            <button class="btn sm ghost" id="bw-shot" title="截取当前页画面并放进对话">截图</button>
-          </div>
           <div class="bw-hint" id="bw-hint"></div>
         </div>
       </aside>

@@ -117,11 +117,41 @@ class SessionStore:
         cur = self.db.execute("DELETE FROM sessions WHERE id=?", (session_id,))
         return cur.rowcount > 0
 
-    def add_usage(self, session_id: str, usage: Usage, cost: float = 0.0) -> None:
+    def add_usage(self, session_id: str, usage: Usage, cost: float = 0.0,
+                  last_usage: dict[str, Any] | None = None) -> None:
+        """累计本会话用量，并同时记录「最后一次调用」的用量快照。
+
+        两个口径不能混用：
+          · `input_tokens` / `output_tokens` 是**累计值**（一场对话总共消耗多少），
+            用于「会话指标」里的累计 tokens 与费用；
+          · `last_usage` 是**最后一次上游调用**的用量，用于「上下文占用」与「命中率」——
+            一轮工具循环会把同一份上下文向上游重发十几次，累计值等于把同一份上下文
+            重复计数，直接拿它当占用显示会得到一个远大于真实上下文的数字。
+
+        快照写进 `meta.last_usage`（不改表结构，旧数据不受影响）。
+        """
+        row = self.db.query_one("SELECT meta FROM sessions WHERE id=?", (session_id,))
+        meta: dict[str, Any] = {}
+        if row and row["meta"]:
+            try:
+                loaded = _loads(row["meta"], {})
+                if isinstance(loaded, dict):
+                    meta = loaded
+            except Exception:
+                meta = {}
+        if last_usage:
+            meta["last_usage"] = {
+                "prompt_tokens": int(last_usage.get("prompt_tokens") or 0),
+                "completion_tokens": int(last_usage.get("completion_tokens") or 0),
+                "total_tokens": int(last_usage.get("total_tokens") or 0),
+                "cached_tokens": int(last_usage.get("cached_tokens") or 0),
+                "reasoning_tokens": int(last_usage.get("reasoning_tokens") or 0),
+            }
         self.db.execute(
             "UPDATE sessions SET input_tokens=input_tokens+?, output_tokens=output_tokens+?,"
-            " cost=cost+?, updated_at=? WHERE id=?",
-            (usage.prompt_tokens, usage.completion_tokens, cost, time.time(), session_id),
+            " cost=cost+?, meta=?, updated_at=? WHERE id=?",
+            (usage.prompt_tokens, usage.completion_tokens, cost,
+             _dumps(meta), time.time(), session_id),
         )
 
     def auto_title(self, session_id: str, first_user_text: str) -> None:

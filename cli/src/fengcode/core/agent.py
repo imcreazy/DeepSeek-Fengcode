@@ -214,6 +214,8 @@ class Agent:
         # ★ 上下文阈值提醒：75% / 92% 各提醒一次，不重复打扰。
         #   记在实例上、每回合开始时清空，保证「同一档位每回合最多提示一次」。
         self._budget_notified: set[str] = set()
+        # 本回合是否已经问过「要不要存记忆」（每回合只问一次）
+        self._memory_asked = False
 
     # ------------------------------------------------------------------
     # 上下文
@@ -604,6 +606,7 @@ class Agent:
         self._step_count = 0
         self._checklist_done = False
         self._budget_notified = set()   # 新回合：阈值提醒重新计数（每档每回合最多一次）
+        self._memory_asked = False      # 新回合：记忆询问重新计数
         cfg = self.config
         limit = int(max_steps or cfg.agent.max_steps)
 
@@ -1074,12 +1077,18 @@ class Agent:
                     total_usage["reasoning_tokens"],
                 ),
                 cost_sum,
+                # ★ 「上下文占用 / 命中率」用最后一次调用的用量，不能用上面的累计值：
+                #   一轮工具循环会把同一份上下文向上游重发十几次，累计值等于重复
+                #   计数同一份上下文。这个快照落进 sessions.meta，重开会话时据此恢复读数。
+                last_usage=last_usage,
             )
         except Exception:
             pass
 
-        # 自动记忆
+        # 自动记忆（仅在消息中明确出现「记住」类措辞时写入）
         await self._auto_remember(user_input, content, sid)
+        # ★ 重要任务 / 长对话收尾：问一次是否把要点存进记忆（由用户决定）
+        await self._maybe_suggest_memory(result, step, sid)
 
         self.bus.emit(Ev.USAGE, {"usage": total_usage, "last_usage": last_usage,
                                  "cost": cost_sum, "currency": currency},
@@ -1365,7 +1374,20 @@ class Agent:
     # 自动记忆
     # ------------------------------------------------------------------
     async def _auto_remember(self, user_input: str, answer: str, sid: str) -> None:
+        """**仅在消息中明确出现「记住」类措辞时**保存记忆。
+
+        设计取舍：此前每轮对话都从用户输入里正则抽取「值得记的句子」直接落库，
+        结果是记忆条目迅速膨胀、大量是完成一次性任务留下的任务描述（例如
+        「帮我做一个 XX 页面」），它们既不跨对话复用，还会挤占每次召回的条数。
+
+        现在只在两种情况下写入：
+          1. 用户明确表达了「记住」的意图（请记住 / 记一下 / 别忘 / 以后都…）；
+        其余情况改为在回合收尾时**询问**是否保存（见 `_maybe_suggest_memory`），
+        由用户决定，不再替用户做主。
+        """
         if not self.config.memory.enabled:
+            return
+        if not _has_explicit_remember_intent(user_input):
             return
         try:
             facts = extract_facts(user_input, limit=2)
@@ -1374,10 +1396,84 @@ class Agent:
                     f, kind="preference" if any(
                         k in f for k in ("偏好", "习惯", "以后", "请记住")
                     ) else "fact",
-                    session_id=sid, source="auto", importance=0.7,
+                    session_id=sid, source="user", importance=0.8,
                 )
         except Exception:
             pass
+
+    def _should_suggest_memory(self, result: Any, step: int) -> bool:
+        """判断本回合收尾时是否该询问「要不要存记忆」。
+
+        两个条件都指向「这轮成果值得留档」：
+          · **重要任务**：本回合真的改动了文件或跑了验证（不是纯聊天）；
+          · **长对话**：本回合步数较多（模型来回多轮才做完）。
+        纯问答、闲聊不触发 —— 否则每轮都问，会变成新的打扰。
+        """
+        if not self.config.memory.enabled:
+            return False
+        try:
+            did_work = bool(result.changed_files) or bool(result.verify_commands)
+            long_turn = step >= 4
+            return did_work or long_turn
+        except Exception:
+            return False
+
+    async def _maybe_suggest_memory(self, result: Any, step: int, sid: str) -> None:
+        """重要任务 / 长对话收尾时，问一次是否把要点存进记忆。
+
+        不直接写入：记忆是跨对话长期生效的东西，存错了会一直影响后续回答，
+        所以由用户拍板。同一回合只问一次，且只在有交互通道（Web/桌面端）时问 ——
+        纯 CLI 无交互时静默跳过，不能把回合卡在等回答上。
+        """
+        if not self._should_suggest_memory(result, step):
+            return
+        if self._memory_asked:
+            return
+        asker = self._asker
+        if asker is None:
+            return
+        self._memory_asked = True
+        try:
+            payload = {
+                "id": new_id("q"),
+                "question": "这一轮改动较多，是否把关键结论存进长期记忆？"
+                            "（存下来会影响以后的回答，所以交给你决定）",
+                "options": [
+                    "存进记忆（把这次的结论与约定记下来）",
+                    "不用存（这次只当一次性任务）",
+                ],
+                "multi_select": False,
+                "context": "记忆会跨对话长期生效，因此不自动保存。",
+            }
+            self.bus.emit("ask.user", payload, session_id=sid)
+            answer = await asyncio.wait_for(asker(payload), timeout=90)
+            if answer and "存进记忆" in str(answer):
+                digest = self._memory_digest(result)
+                if digest:
+                    await self.memory.remember(
+                        digest, kind="episode", session_id=sid,
+                        source="user", importance=0.75, title="本轮任务要点",
+                    )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _memory_digest(result: Any) -> str:
+        """把本回合的真实执行记录压成一条可存的记忆。"""
+        try:
+            parts: list[str] = []
+            files = list(getattr(result, "changed_files", []) or [])
+            if files:
+                shown = "、".join(str(f) for f in files[:6])
+                more = f" 等 {len(files)} 个文件" if len(files) > 6 else ""
+                parts.append(f"改动文件：{shown}{more}")
+            cmds = list(getattr(result, "verify_commands", []) or [])
+            if cmds:
+                parts.append("验证命令：" + "；".join(str(c) for c in cmds[:3]))
+            text = "；".join(parts)
+            return text[:500]
+        except Exception:
+            return ""
 
     @staticmethod
     def _last_assistant_text(msgs: list[Message]) -> str:
@@ -1405,6 +1501,21 @@ class Agent:
 # --------------------------------------------------------------------------
 # 兜底解析：模型把工具调用写在正文里
 # --------------------------------------------------------------------------
+
+# ★ 保存记忆的意图措辞。只有命中这些，才自动写入记忆；
+#   其余情况改由回合收尾时询问（见 Agent._maybe_suggest_memory）。
+#   为什么用「明确措辞」而不是让模型判断：模型倾向于把一切都当成值得记的，
+#   实测记忆条目因此迅速膨胀，且大量是一次性任务描述。
+_REMEMBER_INTENT_RE = re.compile(
+    r"(请记住|帮我记住|记住这|记一下|记下来|别忘了|别忘记|以后都|以后请|"
+    r"牢记|存进记忆|保存到记忆|记到记忆里)"
+)
+
+
+def _has_explicit_remember_intent(text: str) -> bool:
+    """用户是否明确要求「记住这件事」。"""
+    return bool(_REMEMBER_INTENT_RE.search(text or ""))
+
 
 # 可能改变文件系统 / 需要收尾自检的工具
 _MUTATING_TOOLS = {

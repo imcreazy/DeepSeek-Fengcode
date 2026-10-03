@@ -2400,6 +2400,36 @@ async def api_queue(request: Any) -> Response:
     return _err(f"未知操作：{action}")
 
 
+async def api_browser_bridge(request: Any) -> Response:
+    """内置浏览器桥：桌面主进程与后端工具之间的指令通道。
+
+    AI 工具（跑在后端进程）无法直接调用 Electron 的 WebContentsView（活在桌面
+    渲染进程），所以走这条队列：
+
+      · ``GET  /api/browser-bridge``            —— 主进程轮询取一条待执行指令；
+      · ``POST /api/browser-bridge {id, ...}``  —— 主进程回填执行结果。
+
+    桌面主进程是唯一真正的执行者，协议白名单等安全边界仍然落在它那里；
+    这个接口只做搬运，不自己发起任何网络请求。
+    """
+    if not _auth_ok(request):
+        return _err("未授权", 401)
+    from ..tools.builtin.browser import get_browser_bridge
+
+    bridge = get_browser_bridge()
+    if request.method == "GET":
+        cmd = await bridge.take()
+        if cmd is None:
+            return _json({"ok": True, "cmd": None})
+        return _json({"ok": True, "cmd": cmd})
+    body = await _body(request)
+    cmd_id = str(body.get("id") or "")
+    if not cmd_id:
+        return _err("id 不能为空")
+    await bridge.settle(cmd_id, body)
+    return _json({"ok": True})
+
+
 async def api_workspace(request: Any) -> Response:
     """工作区文件浏览（供界面文件树）。"""
     if not _auth_ok(request):
@@ -2556,6 +2586,8 @@ def create_app() -> Starlette:
         Route("/api/workspace", api_workspace),
         # 待发队列持久化（刷新/重开页面后仍能恢复）
         Route("/api/queue", api_queue, methods=["GET", "POST"]),
+        # 内置浏览器桥（桌面主进程轮询取指令 / 回填结果，供 AI 工具驱动浏览器）
+        Route("/api/browser-bridge", api_browser_bridge, methods=["GET", "POST"]),
     ]
     # 静态目录（存在才挂）
     if STATIC_DIR.is_dir():

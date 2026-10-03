@@ -487,6 +487,8 @@ function createWindow() {
 let browserView = null;
 let browserVisible = false;
 let browserBounds = { x: 0, y: 0, width: 0, height: 0 };
+// AI 浏览器指令轮询器的定时器句柄（见 startBrowserBridge）
+let browserBridgeTimer = null;
 
 /** 允许的协议：只放 http/https。 */
 function isAllowedBrowserUrl(url) {
@@ -639,6 +641,178 @@ function showWindow() {
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
+}
+
+// ------------------------------------------------- 内置浏览器：AI 指令执行器
+/**
+ * 让 AI 能直接操控内置浏览器。
+ *
+ * 背景：内置浏览器是 Electron 的 WebContentsView，活在**桌面外壳**里；而 AI 工具
+ * 跑在**后端 Python 进程**里。两者之间没有直接调用关系，所以后端放了一个指令队列
+ * （`/api/browser-bridge`），这里定时取出来执行、再把结果回填。
+ *
+ * 执行者始终是主进程 —— 协议白名单等安全边界仍然落在这里，和后端工具调用界面按钮
+ * 走的是同一条路，不存在「AI 绕开我的安全规则」的缺口。
+ */
+
+/** 对后端的一次调用（内部用，避免把大对象塞进 URL）。 */
+function backendJson(method, path, body) {
+  return new Promise((resolve) => {
+    try {
+      const payload = body ? Buffer.from(JSON.stringify(body), "utf8") : null;
+      const req = http.request(
+        `${BASE_URL}${path}`,
+        {
+          method,
+          timeout: 5000,
+          headers: payload
+            ? { "Content-Type": "application/json", "Content-Length": payload.length }
+            : {},
+        },
+        (res) => {
+          let buf = "";
+          res.on("data", (d) => (buf += d));
+          res.on("end", () => {
+            try {
+              resolve(JSON.parse(buf));
+            } catch (e) {
+              resolve({ ok: false, error: "返回内容不是 JSON" });
+            }
+          });
+        },
+      );
+      req.on("error", (e) => resolve({ ok: false, error: String((e && e.message) || e) }));
+      req.on("timeout", () => { req.destroy(); resolve({ ok: false, error: "请求超时" }); });
+      if (payload) req.write(payload);
+      req.end();
+    } catch (e) {
+      resolve({ ok: false, error: String((e && e.message) || e) });
+    }
+  });
+}
+
+/** 等到页面加载结束（或超时），避免刚 navigate 就去读正文。 */
+function waitForLoad(v, timeoutMs = 15000) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try { v.webContents.removeListener("did-stop-loading", finish); } catch (e) {}
+      try { v.webContents.removeListener("did-fail-load", finish); } catch (e) {}
+      resolve();
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    try {
+      v.webContents.once("did-stop-loading", finish);
+      v.webContents.once("did-fail-load", finish);
+    } catch (e) {
+      finish();
+    }
+  });
+}
+
+/** 执行一条后端下发的浏览器指令。 */
+async function runBrowserCommand(cmd) {
+  const action = String((cmd && cmd.action) || "");
+  const params = (cmd && cmd.params) || {};
+  const fail = (error) => ({ id: cmd.id, ok: false, error });
+
+  // `open` 需要先确保视图存在；其余动作要求视图已经在
+  let v = browserView;
+  if (!v || v.webContents.isDestroyed()) {
+    if (action === "open" || action === "status") {
+      v = ensureBrowserView();
+    }
+    if (!v || v.webContents.isDestroyed()) return fail("内置浏览器尚未创建（主窗口不可用）");
+  }
+  const wc = v.webContents;
+
+  try {
+    if (action === "open") {
+      const url = normalizeBrowserUrl(params.url);
+      if (!isAllowedBrowserUrl(url)) return fail("只允许打开 http / https 地址");
+      // AI 驱动时把视图显示出来：用户能看见 AI 在浏览什么，而不是「悄悄开了一个页面」。
+      // 若界面还没保持住矩形，就用当前已有的 bounds；仍为 0 时不显示（界面收起状态）。
+      if (browserBounds.width >= 8 && browserBounds.height >= 8) {
+        showBrowserView(browserBounds);
+      }
+      wc.loadURL(url);
+      await waitForLoad(v, Number(params.wait_ms) || 12000);
+      return {
+        id: cmd.id, ok: true,
+        url: wc.getURL(), title: wc.getTitle(),
+        canGoBack: wc.navigationHistory.canGoBack(),
+        canGoForward: wc.navigationHistory.canGoForward(),
+      };
+    }
+
+    if (action === "read") {
+      const r = await readBrowserText(Number(params.max_chars) || 12000);
+      return Object.assign({ id: cmd.id }, r);
+    }
+
+    if (action === "screenshot") {
+      const img = await wc.capturePage();
+      const size = img.getSize();
+      return {
+        id: cmd.id, ok: true,
+        dataUrl: img.toDataURL(),
+        url: wc.getURL(), title: wc.getTitle(),
+        width: size.width, height: size.height,
+      };
+    }
+
+    if (action === "action") {
+      const name = String(params.name || "");
+      if (name === "status") {
+        return { id: cmd.id, ok: true, url: wc.getURL(), title: wc.getTitle() };
+      }
+      if (name === "close") {
+        destroyBrowserView();
+        return { id: cmd.id, ok: true, closed: true };
+      }
+      if (name === "back") {
+        if (wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack();
+        await waitForLoad(v, 8000);
+      } else if (name === "forward") {
+        if (wc.navigationHistory.canGoForward()) wc.navigationHistory.goForward();
+        await waitForLoad(v, 8000);
+      } else if (name === "reload") {
+        wc.reload();
+        await waitForLoad(v, 12000);
+      } else {
+        return fail(`不支持的动作：${name}`);
+      }
+      return { id: cmd.id, ok: true, url: wc.getURL(), title: wc.getTitle() };
+    }
+
+    return fail(`不支持的指令：${action}`);
+  } catch (e) {
+    return fail(String((e && e.message) || e));
+  }
+}
+
+/** 轮询取指令 → 执行 → 回填。桌面端在跑就一直轮询，这样 AI 随时能调用。 */
+function startBrowserBridge() {
+  if (browserBridgeTimer) return;
+  const tick = async () => {
+    try {
+      if (!quitting) {
+        const got = await backendJson("GET", "/api/browser-bridge");
+        const cmd = got && got.ok ? got.cmd : null;
+        if (cmd && cmd.id) {
+          const result = await runBrowserCommand(cmd);
+          await backendJson("POST", "/api/browser-bridge", result);
+        }
+      }
+    } catch (e) {
+      // 后端还没起来 / 正在重启：下一轮自然重试，不刷屏
+    }
+    browserBridgeTimer = setTimeout(tick, 400);
+  };
+  tick();
 }
 
 // ---------------------------------------------------------------- 托盘
@@ -913,6 +1087,9 @@ if (!gotLock) {
     createWindow();
 
     const ok = await startBackend();
+    // ★ 启动 AI 浏览器指令轮询：桌面端在跑就一直轮询，这样 AI 随时能操控内置浏览器。
+    //   即使界面没打开「浏览器」标签也照常轮询 —— 工具调用不该依赖用户当前看哪个面板。
+    startBrowserBridge();
     if (ok && mainWindow) {
       // 后端好了，切到真实界面（失败时给一张错误页）
       mainWindow.loadURL(BASE_URL).catch((e) => {
