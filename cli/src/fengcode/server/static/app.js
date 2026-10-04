@@ -2919,6 +2919,14 @@ async function send() {
   const toolTimes = {};
   // 事件共享同一对象，避免结束事件丢失思考框引用。
   const streamContext = {
+    // ★★★ 会话归属必须放在这个**会传给 handleEvent 的对象**上。
+    //   为什么：handleEvent 是**模块级函数**，访问不到 send() 的局部变量 ——
+    //   而 case "usage" 里原先直接引用了 `streamOwnerSid`（send 的局部 const），
+    //   在 "use strict" 下会抛 ReferenceError，被外层空 catch 静默吞掉，
+    //   导致**整个 usage 分支不执行**（实测：读数一直 0、「累计 tokens」也是 0，
+    //   但切换会话再切回来就正常 —— 因为那条路走 applySessionUsage，不经 handleEvent）。
+    //   挂在这里之后，handleEvent 通过参数 c 就能读到，不再依赖外层作用域。
+    ownerSid: S.sessionId || "",
     get assist() { return assistEl; }, set assist(v) { assistEl = v; },
     get pending() { return pendingEl; }, set pending(v) { pendingEl = v; },
     get reasoning() { return reasoningEl; }, set reasoning(v) { reasoningEl = v; },
@@ -3451,10 +3459,14 @@ function handleEvent(ev, c) {
     }
     case "usage": {
       // ★ 会话归属校验（与 processPart 同一道理）：老会话的用量不得覆盖新会话读数。
+      // ★★ 归属值从**参数 c** 上取（c.ownerSid），绝不能引用 send() 的局部变量 ——
+      //    handleEvent 是模块级函数，读外层函数局部变量会抛 ReferenceError 并被静默吞掉，
+      //    整个分支都不执行（这就是「发消息后读数一直 0」的根因）。
+      const ownerSid = (c && c.ownerSid) || "";
       const evSid = ev.session_id || d.session_id || "";
-      if (evSid && streamOwnerSid && evSid !== streamOwnerSid) break;
+      if (evSid && ownerSid && evSid !== ownerSid) break;
       // 若用户已切走（当前会话 ≠ 本流归属），也不要把读数写进新会话的界面。
-      if (streamOwnerSid && S.sessionId && S.sessionId !== streamOwnerSid) break;
+      if (ownerSid && S.sessionId && S.sessionId !== ownerSid) break;
       const u = d.usage || {};
       // last_usage = 最后一次上游调用的用量（上下文占用 / 命中率用它）；
       // usage = 本回合累加（费用、「本次 tokens」用它）。
