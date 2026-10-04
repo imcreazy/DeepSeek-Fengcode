@@ -336,6 +336,17 @@ class Usage:
     #   由调用方按「未报即未知」处理，不硬凑。
     cache_miss_tokens: int = 0
 
+    def has_data(self) -> bool:
+        """这次调用**是否真的拿到了用量**。
+
+        ★★ 为什么必须单独判定而不能写 `if usage:` —— dataclass 没有 `__bool__`，
+        一个全 0 的空用量对象在 `if` 里同样是 True。调用失败（连接断开、上游
+        没发 usage）时拿到的正是这种空对象，若当成真数据就会把**几十万的真实读数
+        覆盖成 0**（实测踩过：库里累计 463905，而快照全 0，界面一直显示「尚无调用记录」，
+        退出重进也还是 0）。凡是要「用这次用量覆盖上次快照」的地方，都先问这个方法。
+        """
+        return bool(self.prompt_tokens or self.completion_tokens or self.total_tokens)
+
     def add(self, other: "Usage") -> "Usage":
         return Usage(
             prompt_tokens=self.prompt_tokens + other.prompt_tokens,

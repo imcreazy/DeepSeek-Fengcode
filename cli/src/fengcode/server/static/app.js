@@ -2491,11 +2491,19 @@ function applySessionUsage(sess) {
   //   上下文向上游重发十几次，拿累计值当占用会显示成远大于真实上下文的天文数字。
   //   没有快照（旧数据）时才退回累计值，保证不显示成空白。
   const lu = (sess && sess.meta && sess.meta.last_usage) || null;
-  const ctxPrompt = lu ? Number(lu.prompt_tokens || 0) : used;
-  const ctxCached = lu ? Number(lu.cached_tokens || 0) : 0;
+  // ★★ 快照「存在但全 0」必须视为**无效**，退回累计值。
+  //   为什么：调用失败（连接断开、上游没发用量）会写入一个全 0 的快照，把真实读数覆盖掉
+  //   （实测：库里 input_tokens=463905，而 meta.last_usage 全是 0 → 界面一直显示
+  //   「尚无调用记录」，退出重进也还是 0，因为库里存的就是这个 0）。
+  //   判定「有没有真数据」看字段和，不看对象是否存在 —— 与后端 agent.py 的判定一致。
+  const luValid = !!(lu && (Number(lu.prompt_tokens || 0) > 0
+    || Number(lu.completion_tokens || 0) > 0
+    || Number(lu.total_tokens || 0) > 0));
+  const ctxPrompt = luValid ? Number(lu.prompt_tokens || 0) : used;
+  const ctxCached = luValid ? Number(lu.cached_tokens || 0) : 0;
   // ★ 未命中量一并取回：重开会话时命中率仍按「命中 /（命中 + 未命中）」算，
   //   不必拿 prompt 反推（反推在不同供应商下口径不一）。
-  const ctxMiss = lu
+  const ctxMiss = luValid
     ? ((lu.cache_miss_tokens != null)
         ? Number(lu.cache_miss_tokens)
         : Math.max(0, ctxPrompt - ctxCached))

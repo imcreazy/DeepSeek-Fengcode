@@ -211,12 +211,83 @@ class SessionStore:
                 repaired += 1
         return {"repaired": repaired, "scanned": len(sessions)}
 
+    def _last_usage_from_log(self, session_id: str) -> dict[str, int] | None:
+        """从用量日志里取该会话**最近一次真正有输入量**的快照。
+
+        ★ 为什么需要这个修复通道：调用失败（连接断开、上游没发 usage）时曾写入一个
+        全 0 的快照覆盖掉真实读数，并随会话落库 —— 于是界面一直显示 0，
+        用户「退出重进也一样」。真实的用量其实**一直躺在 usage_log 里**，
+        所以这里按 `prompt_tokens > 0` 找回最近一条有效记录，重建快照，让旧会话自愈。
+        """
+        try:
+            row = self.db.query_one(
+                "SELECT prompt_tokens, output_tokens, cached_tokens, reasoning_tokens,"
+                " cache_miss_tokens FROM usage_log"
+                " WHERE session_id=? AND prompt_tokens > 0"
+                " ORDER BY id DESC LIMIT 1",
+                (session_id,),
+            )
+        except Exception:
+            return None
+        if not row:
+            return None
+        p = int(row["prompt_tokens"] or 0)
+        c = int(row["output_tokens"] or 0)
+        cached = int(row["cached_tokens"] or 0)
+        miss = row["cache_miss_tokens"]
+        return {
+            "prompt_tokens": p,
+            "completion_tokens": c,
+            "total_tokens": p + c,
+            "cached_tokens": cached,
+            "reasoning_tokens": int(row["reasoning_tokens"] or 0),
+            # 上游没记未命中量时按差值兜底，与别处口径一致
+            "cache_miss_tokens": int(miss) if miss is not None else max(0, p - cached),
+        }
+
     @staticmethod
-    def _session_dict(row) -> dict[str, Any]:
+    def _usage_snapshot_empty(lu: Any) -> bool:
+        """快照是否「存在但没有任何有效数据」。
+
+        ★ 判据看**字段和**而不是对象是否存在：全 0 的快照在 UI 上会渲染成
+        「尚无调用记录」，与「真的没有数据」表现相同，但它其实是一次失败调用留下的脏值。
+        """
+        if not isinstance(lu, dict):
+            return True
+        try:
+            return not (int(lu.get("prompt_tokens") or 0)
+                        or int(lu.get("completion_tokens") or 0)
+                        or int(lu.get("total_tokens") or 0))
+        except Exception:
+            return True
+
+    def _session_dict(self, row) -> dict[str, Any]:
         d = dict(row)
         d["meta"] = _loads(d.get("meta"), {})
         d["pinned"] = bool(d.get("pinned"))
         d["archived"] = bool(d.get("archived"))
+        # ★ 旧会话自愈：快照缺失或全 0 时，从用量日志重建真实读数。
+        #   为什么放在这里：`_session_dict` 是所有读取路径的共同出口，
+        #   在这里补一次，界面无论从哪条路读到会话都能看到正确读数。
+        try:
+            meta = d["meta"] if isinstance(d["meta"], dict) else {}
+            sid = d.get("id") or ""
+            if sid and self._usage_snapshot_empty(meta.get("last_usage")):
+                rebuilt = self._last_usage_from_log(sid)
+                if rebuilt is not None:
+                    meta = dict(meta)
+                    meta["last_usage"] = rebuilt
+                    d["meta"] = meta
+                    # 顺手写回库：下次读不必再查日志（失败不影响本次展示）
+                    try:
+                        self.db.execute(
+                            "UPDATE sessions SET meta=? WHERE id=?",
+                            (_dumps(meta), sid),
+                        )
+                    except Exception:
+                        pass
+        except Exception:
+            pass
         return d
 
     # ---- 消息 ----------------------------------------------------------
