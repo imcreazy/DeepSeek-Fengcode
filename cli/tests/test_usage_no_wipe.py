@@ -101,4 +101,54 @@ def test_frontend_treats_all_zero_snapshot_as_invalid():
     app = _P / "fengcode" / "server" / "static" / "app.js"
     s = io.open(app, encoding="utf-8").read()
     assert "luValid" in s, "applySessionUsage 必须有 luValid 判定"
-    assert "hasFresh" in s, "usage 分支必须有 hasFresh 判定"
+    # ★ 判据已收敛到**唯一入口** usageSnapshotHasData（原先散在两处内联判断，
+    #   改一处漏一处正是这条 bug 反复出现的原因）。
+    assert "function usageSnapshotHasData(" in s, (
+        "必须存在统一的用量快照判据函数 usageSnapshotHasData"
+    )
+    assert "usageSnapshotHasData(lu)" in s, "applySessionUsage 必须调用统一判据"
+    assert "usageSnapshotHasData(luRaw)" in s, "usage 分支必须调用统一判据"
+    # ★★ 反例形态不得回归：用「字段是否存在」判定（0 != null 为真 → 把真实读数覆盖成 0）
+    import re
+    bad = re.search(r"prompt_tokens\s*!=\s*null\s*&&", s)
+    assert bad is None, (
+        "检测到「字段存在性」判据 —— 全 0 快照里字段是存在的，会被误判成有数据"
+    )
+
+
+def test_unified_guard_semantics_match_backend():
+    """前端统一判据的语义必须与后端 Usage.has_data() 一致（两端不同步即再现此 bug）。
+
+    直接抽出 app.js 里那个函数体，用 Node 跑一遍真实语义。
+    """
+    import json
+    import subprocess
+
+    app = _P / "fengcode" / "server" / "static" / "app.js"
+    s = io.open(app, encoding="utf-8").read()
+    i = s.find("function usageSnapshotHasData(snap) {")
+    assert i > 0, "找不到 usageSnapshotHasData"
+    # 截到函数结束（第一个单独一行 "}" 处）
+    j = s.find("\n}", i)
+    fn_src = s[i:j + 2]
+
+    script = fn_src + """
+const cases = [
+  [null, false], [{}, false],
+  [{prompt_tokens:0,completion_tokens:0,total_tokens:0,cached_tokens:0}, false],
+  [{prompt_tokens:13022}, true],
+  [{completion_tokens:5}, true],
+  [{total_tokens:100}, true],
+  [{prompt_tokens:0,cached_tokens:100}, false]
+];
+const bad = [];
+for (const [inp, want] of cases) {
+  const got = usageSnapshotHasData(inp);
+  if (got !== want) bad.push(JSON.stringify(inp) + ' => ' + got + ' (want ' + want + ')');
+}
+console.log(JSON.stringify(bad));
+"""
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, f"node 执行失败: {out.stderr}"
+    bad = json.loads(out.stdout.strip().splitlines()[-1])
+    assert not bad, "前后端判据语义不一致：" + "；".join(bad)

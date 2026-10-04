@@ -1568,6 +1568,24 @@ function hitRatePct(hit, tot) {
   return r;
 }
 
+/** 一个用量快照里**是否真的有数据**（全站唯一的判定入口）。
+ *
+ * ★★★ 判据是「字段和 > 0」，**不是**「字段存在」。
+ *   为什么不能写 `snap.prompt_tokens != null` 之类：全 0 的快照里字段**是存在的**
+ *   （值就是 0），存在性判断对它同样成立 → 会被误判成「有数据」→ 把上一轮的真实读数
+ *   覆盖成 0。实测症状就是「打开会话显示正常，一发消息就变回『尚无调用记录』」
+ *   （回合内首次广播时本轮还没拿到用量，快照是空的或全 0）。
+ *
+ * ★ 后端有一份**语义必须完全一致**的判定：`Usage.has_data()`（llm/types.py）。
+ *   两端判据不同步是这条 bug 反复出现的原因，改动时请一起改。
+ */
+function usageSnapshotHasData(snap) {
+  if (!snap || typeof snap !== "object") return false;
+  return (Number(snap.prompt_tokens || 0) > 0
+    || Number(snap.completion_tokens || 0) > 0
+    || Number(snap.total_tokens || 0) > 0);
+}
+
 async function renderInfoPanel() {
   if (!S.infoOpen) return;
   const body = $("#ip-body");
@@ -2495,10 +2513,8 @@ function applySessionUsage(sess) {
   //   为什么：调用失败（连接断开、上游没发用量）会写入一个全 0 的快照，把真实读数覆盖掉
   //   （实测：库里 input_tokens=463905，而 meta.last_usage 全是 0 → 界面一直显示
   //   「尚无调用记录」，退出重进也还是 0，因为库里存的就是这个 0）。
-  //   判定「有没有真数据」看字段和，不看对象是否存在 —— 与后端 agent.py 的判定一致。
-  const luValid = !!(lu && (Number(lu.prompt_tokens || 0) > 0
-    || Number(lu.completion_tokens || 0) > 0
-    || Number(lu.total_tokens || 0) > 0));
+  //   判定统一走 usageSnapshotHasData（全站唯一入口，与后端 Usage.has_data() 同口径）。
+  const luValid = usageSnapshotHasData(lu);
   const ctxPrompt = luValid ? Number(lu.prompt_tokens || 0) : used;
   const ctxCached = luValid ? Number(lu.cached_tokens || 0) : 0;
   // ★ 未命中量一并取回：重开会话时命中率仍按「命中 /（命中 + 未命中）」算，
@@ -3444,29 +3460,28 @@ function handleEvent(ev, c) {
       // usage = 本回合累加（费用、「本次 tokens」用它）。
       // ★ 为什么必须分开：一轮工具循环会把同一份上下文向上游重发十几次，
       //   累加 prompt_tokens 就是把它重复计数 —— 实测界面 250K、上游 20K。
-      const lu = d.last_usage || u;
-      // ★★ 「本轮有没有真实用量」必须先判定，不能直接按 0 覆盖（实测：
-      //    发出消息后要等整轮结束才看到数字，等的那几秒读数一直显示「尚无调用记录」，
-      //    可上一轮明明有 13022 的读数）。
-      //    根因：这个事件在**回合进行中**也会发（每轮工具执行后），而刚发出消息时
-      //    上游还没返回，last_usage 是空的 —— 整体覆盖就把上一轮的好读数抹成了 0。
-      //    判据用「有没有拿到真实的输入量」：有才覆盖，没有就保留上一轮。
-      //    注意 distinction：上游**明确返回 0**（极短输入）时 lu.prompt_tokens 是 0，
-      //    那也属于「有数据」，要如实覆盖 —— 所以看的是字段存不存在，不是值大不大。
-      const hasFresh = !!lu && lu.prompt_tokens != null && (lu.prompt_tokens > 0
-        || lu.completion_tokens != null || lu.cached_tokens != null);
-      if (hasFresh) {
+      const luRaw = d.last_usage;
+      // ★★★ 判据走 usageSnapshotHasData（全站唯一入口）：**看字段和，不看字段是否存在**。
+      //   为什么：全 0 的快照里字段是**存在的**（值就是 0），写 `field != null`
+      //   对它同样成立 → 会被误判成「有数据」→ 把上一轮的真实读数覆盖成 0。
+      //   实测症状：打开会话显示正常，**一发消息就变回「尚无调用记录」**
+      //   （回合内首次广播时本轮还没拿到用量，快照是空的或全 0）。
+      //   该判据与后端 Usage.has_data()（llm/types.py）同口径，两端必须一起改。
+      // ★★ 另注意：**不要**在 luRaw 缺失时回退用 u（累加值）——
+      //   累加值是一轮里把同一份上下文重发十几次的总和，虚高十倍，
+      //   当上下文占用显示会得到天文数字（实测界面 250K vs 上游 20K）。
+      if (usageSnapshotHasData(luRaw)) {
         S.turnUsage = Object.assign({}, S.turnUsage || {}, {
           total_tokens: u.total_tokens || 0,
           acc_prompt_tokens: u.prompt_tokens || 0,
           acc_cached_tokens: u.cached_tokens || 0,
-          prompt_tokens: Number(lu.prompt_tokens) || 0,
-          cached_tokens: Number(lu.cached_tokens) || 0,
+          prompt_tokens: Number(luRaw.prompt_tokens) || 0,
+          cached_tokens: Number(luRaw.cached_tokens) || 0,
           // ★ 未命中量：命中率的分母（命中 + 未命中）。上游未回时按差值兜底，
           //   与后端 llm/base.py 的解析口径保持一致。
-          cache_miss_tokens: (lu.cache_miss_tokens != null)
-            ? Number(lu.cache_miss_tokens)
-            : Math.max(0, Number(lu.prompt_tokens || 0) - Number(lu.cached_tokens || 0)),
+          cache_miss_tokens: (luRaw.cache_miss_tokens != null)
+            ? Number(luRaw.cache_miss_tokens)
+            : Math.max(0, Number(luRaw.prompt_tokens || 0) - Number(luRaw.cached_tokens || 0)),
           completion_tokens: u.completion_tokens || 0,
           reasoning_tokens: u.reasoning_tokens || 0,
           cost: d.cost || 0,
