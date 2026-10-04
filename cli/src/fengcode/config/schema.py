@@ -170,9 +170,14 @@ class AgentConfig(_Base):
     reasoning_language: str = "zh"
     language: str = "zh"
     temperature: float = 0.6
-    # 单轮任务最多连续多少步工具调用。50 够跑大重构，又不至于死循环烧钱。
-    # 不暴露在界面上。
-    max_steps: int = 50
+    # 单轮任务的**安全上限**（步数）。★ 默认 0 = 不限，靠「无进展防护」自动收尾。
+    #   为什么改成不限：以前是 `while step < limit` 的**硬上限**，跑到第 N 步
+    #   无条件掐断 —— 哪怕模型一直在读新文件、稳步推进。实测用户的长任务
+    #   （做一个 HTML 动画）跑到一半被 30 步截断，连收尾总结都没来得及写。
+    #   现在只保留「连续多轮没有任何新证据才收尾」（见 agent.py 的 stall 判定），
+    #   真跑几百步也不会被误杀，而反复空转仍会停下。
+    #   设为正数则仍作为兜底上限（一般不需要）。不暴露在界面上。
+    max_steps: int = 0
     max_parallel_subagents: int = 4
     reflection: bool = True
     routing: bool = True

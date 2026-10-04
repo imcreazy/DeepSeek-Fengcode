@@ -1659,6 +1659,17 @@ async function renderInfoPanel() {
         const denom = (hit + miss) > 0 ? (hit + miss) : tot;
         const rate = hitRatePct(hit, denom);
         const cls = rate >= 70 ? "" : (rate >= 40 ? "warn" : "danger");
+        // ★ 本会话**累计**命中率：用户要的是「总的命中率」也看得见，
+        //   而不只是最近一次调用（单次调用会被一次冷启动拖到很低，看着像坏了）。
+        //   数据来自后端 session 维度的聚合（cached_tokens / cache_miss_tokens 求和）。
+        //   ★★ 只认 stats.session，**绝不能回退到 all（全库）** —— 那会把整个安装的
+        //   历史数字冒充本会话读数（之前踩过：上下文卡是 0，旁边挂着 4.77M 的命中量）。
+        const sSess = (stats && stats.session) || null;
+        const sHit = Number((sSess && sSess.cached_tokens) || 0);
+        const sMiss = Number((sSess && sSess.cache_miss_tokens) || 0);
+        const sDenom = sHit + sMiss;
+        const totalRate = (sSess && sDenom > 0) ? hitRatePct(sHit, sDenom) : null;
+        const totalCls = totalRate === null ? "" : (totalRate >= 70 ? "" : (totalRate >= 40 ? "warn" : "danger"));
         // ★ 归因说明：告诉用户「这次为什么没命中」。
         //   只有命中率偏低时才显示 —— 命中正常时这句是噪音。
         //   没变前缀却仍低命中 → 那是服务商侧的原因，界面要如实说出来，
@@ -1675,11 +1686,16 @@ async function renderInfoPanel() {
               : "前缀与上次一致，未命中来自服务商侧（缓存过期或路由变更）";
           }
         } catch (e) {}
-        return `<div class="ip-big">${rate}<span class="ip-sub">%</span></div>
-          <div class="ip-bar"><i class="${cls}" style="width:${rate}%"></i></div>
-          <div class="ip-legend"><span>命中 ${fmtNum(hit)}</span><span class="spacer"></span>
-          <span>共 ${fmtNum(denom)}</span></div>
-          <div class="ip-legend" style="margin-top:4px"><span>口径：本会话最后一次调用（命中 / 命中+未命中）</span></div>
+        // ★ 两个数并列：大数字是**本会话总计**，下面一行给**本轮（最近一次调用）**。
+        //   为什么大数字用总计：用户看命中率是想知道「整体省不省钱」；
+        //   单次调用会被一次冷启动拖低，当作主指标会误导。
+        const bigRate = totalRate === null ? rate : totalRate;
+        const bigCls = totalRate === null ? cls : totalCls;
+        return `<div class="ip-big">${bigRate}<span class="ip-sub">%</span></div>
+          <div class="ip-bar"><i class="${bigCls}" style="width:${bigRate}%"></i></div>
+          <div class="ip-legend"><span>本会话总计</span><span class="spacer"></span>
+          <span>命中 ${fmtNum(sHit || hit)} / 共 ${fmtNum(sDenom || denom)}</span></div>
+          <div class="ip-legend" style="margin-top:4px"><span>本轮 ${rate}%（命中 ${fmtNum(hit)} / 共 ${fmtNum(denom)}）</span></div>
           ${why ? `<div class="ip-legend" style="margin-top:4px"><span>${esc(why)}</span></div>` : ""}`;
       })()}
     </div>
@@ -3241,6 +3257,13 @@ function markReasoningDone(c) {
 
 function handleEvent(ev, c) {
   const d = ev.data || {};
+  // ★★★ 会话归属统一校验（放在入口，覆盖所有分支）。
+  //   为什么必须在入口做：`processPart` 那道校验比的是「事件与会话**流**是否一致」——
+  //   用户在 A 发任务、切到 B 后，事件里的 sid 与 streamOwnerSid **都还是 A**，
+  //   那道校验照样通过，于是事件被写进**当前界面（B）**。
+  //   实测症状：在 A 发任务，切到 B、C 都看到「正在思考」，内容还一模一样。
+  //   这里比的是「当前会话是否还是这条流的归属」，切走即丢弃，切回来自动恢复。
+  if (c && c.ownerSid && S.sessionId && S.sessionId !== c.ownerSid) return;
   switch (ev.type) {
     case "text": {
       // ★ 已开始输出正文 → 这段思考结束，计时停表（不然正文都在打字了，
@@ -3275,9 +3298,23 @@ function handleEvent(ev, c) {
       // 旧写法只在 !c.reasoning 时新建，而回合中工具调用会把 reasoningBox 挪走并把
       // 引用置空、却漏了 c.reasoning —— 于是后续思考继续写进那个已被挪走的旧框，
       // 一个回合就碎成十几个「思考过程」块（实测见 17 个）。
+      // ★★ 边界：上一段思考已停表（rtStopped=true），而现在又来了 reasoning ——
+      //   说明这是**新的一段思考**（中间隔着正文或工具）。此时必须复位停表标志、
+      //   重置起点，否则计时器不会走（恒为 0.0s）。
+      //   为什么不在下面 else 分支做：框还在 DOM 时走的是「复用」分支，
+      //   只在新建分支复位会漏掉「思考→正文→又思考」这条路径。
+      if (c.rtStopped) {
+        c.rtStopped = false;
+        c.rt0 = Date.now();
+      }
       if (!c.reasoning || !c.reasoning.isConnected) {
         c.rtext = d.text || "";   // 新一段思考：文本从头累积，不接上一段的尾巴
         c.rt0 = Date.now();       // 这一块思考的开始时间（用于实时显示思考时长）
+        // ★★★ 必须复位「已停表」标志 —— 这是「思考时间一直是 0.0 秒」的根因。
+        //   markReasoningDone() 在第一段思考结束时会把它置 true，而这里若不复位，
+        //   后续每一段新思考都被这个残留标志挡住：ticker 不再刷新秒数（恒为 0.0s），
+        //   收尾时也不会再定格。旧写法只设了 rtext / rt0，漏了这一行。
+        c.rtStopped = false;
         const wrap = document.createElement("div");
         wrap.className = "msg-wrap reasoning-wrap";
         // 流式期间默认折叠：思考是大段英文/长文时不再把正文挤到看不见

@@ -643,7 +643,14 @@ class Agent:
         self._checklist_done = False
         self._budget_notified = set()   # 新回合：阈值提醒重新计数（每档每回合最多一次）
         cfg = self.config
+        # ★ 步数上限：**0 = 不限**（默认）。靠下面的「无进展防护」自动收尾。
+        #   为什么不再用硬上限：旧写法 `while step < limit` 跑到第 N 步无条件掐断，
+        #   哪怕模型一直在读新文件、稳步推进 —— 实测用户做一个 HTML 动画时被
+        #   30 步截断，连收尾总结都没来得及写（表现为「做完不回复收尾的话」）。
+        #   现在只有「连续多轮没有任何新证据」才收尾（见下方 stall 判定），
+        #   真跑几百步也不会被误杀，反复空转仍会停下。
         limit = int(max_steps or cfg.agent.max_steps)
+        unlimited_steps = limit <= 0
 
         # 工作模式：显式传入则写回会话，供后续轮次与前端读取
         if mode is not None:
@@ -700,14 +707,20 @@ class Agent:
         stall = 0                       # 连续无新证据的轮数
         stall_limit = 8                 # 连续这么多轮没有新证据 → 提前收尾
         seen_evidence: set[str] = set()  # 去重后的证据指纹（工具结果摘要）
+        # ★ 绝对兜底：即使判定机制失灵，也不至于无限跑下去。
+        #   为什么还要它：stall 只看「有没有新证据」，而某些任务每轮都在写新内容
+        #   却始终不收敛（例如反复重写同一文件的不同片段）。给一个极高的天花板，
+        #   正常任务永远碰不到，真跑飞了也能停。取 max_steps>0 时用配置值。
+        hard_ceiling = limit if not unlimited_steps else 100_000
 
-        while step < limit:
+        while step < hard_ceiling:
             if self._cancel.is_set():
                 result.stopped = True
                 break
             step += 1
             self._step_count = step
-            self.bus.emit(Ev.STEP, {"step": step, "max": limit}, session_id=sid)
+            self.bus.emit(Ev.STEP, {"step": step, "max": 0 if unlimited_steps else limit},
+                          session_id=sid)
 
             # ---- 调用模型 ----
             resp: LLMResponse | None = None
@@ -836,7 +849,7 @@ class Agent:
                 #   否则用户看到的就是「思考到一半突然停」「回答说到一半就断」
                 #   （实测根因：配置里残留了 max_tokens = 8192）。
                 _fin = (resp.finish_reason or "").lower()
-                if _fin in ("length", "max_tokens", "max_output_tokens") and step < limit:
+                if _fin in ("length", "max_tokens", "max_output_tokens") and step < hard_ceiling:
                     if resp.content or resp.reasoning:
                         part = Message(role="assistant", content=resp.content or "",
                                        reasoning=resp.reasoning or "")
@@ -856,7 +869,7 @@ class Agent:
                     continue
                 if (
                     cfg.agent.submit_checklist
-                    and step < limit
+                    and step < hard_ceiling
                     and not self._checklist_done
                     and _needs_submit_check(msgs)
                 ):
@@ -1021,12 +1034,43 @@ class Agent:
                 msgs = compacted
                 result.compacted = True
 
-        if step >= limit and not result.stopped:
+        # ★ 只在**真的撞到配置上限**时提示（不限步数时 step 永远不会 >= hard_ceiling，
+        #   所以这里用 !unlimited_steps 判定更直白，避免把兜底天花板误报成「上限」）。
+        if not unlimited_steps and step >= limit and not result.stopped:
             self.bus.emit(
                 Ev.LOG,
                 {"level": "warn", "message": f"已达最大步数 {limit}，可能还有未完成的工作"},
                 session_id=sid,
             )
+
+        # ---- 被上限 / 绕圈判定打断时，补一次收尾发言 ----
+        # ★ 为什么需要：模型做长任务时可能一直在调工具，被步数上限或绕圈判定打断 ——
+        #   此时本回合**没有交付文字**，用户看到的就是「做完了却不回复收尾的话」。
+        #   （实测：做一个 HTML 动画时跑到 30 步被掐断，连一句总结都没有。）
+        # ★★ 判据用「本回合有没有交付文字」而不是「为什么结束」——
+        #   之前只写了「撞上限或绕圈」两种原因，结果绕圈收尾时漏补（单测当场暴露）。
+        #   只要不是用户主动停止、也没有报错，且一个字都没交付，就补一次。
+        # ★★ 补收尾时**必须传空工具表**：否则模型很可能又去调工具，还是不说话。
+        if not result.stopped and not result.error and not final_text_parts:
+            try:
+                msgs.append(Message.system(
+                    "请用一两句话总结这一轮：做了什么、还差什么。"
+                    "不要再调用任何工具，直接给出结论。"
+                ))
+                if stream:
+                    resp2, t2, r2 = await self._stream_once(
+                        msgs, [], sid, model=model, on_event=on_event
+                    )
+                else:
+                    resp2 = await self._call_once(msgs, [], model=model)
+                    t2, r2 = resp2.content or "", resp2.reasoning or ""
+                if t2:
+                    final_text_parts.append(t2)
+                if r2:
+                    reasoning_parts.append(r2)
+                # 收尾发言不计入 steps（它不是主循环的一步），用量已在 total_usage 里累计。
+            except Exception:
+                pass   # 补收尾失败不该让整轮失败；大不了就是没有收尾文字
 
         # ---- 收尾 ----
         # ★ 交付文字只取「本回合流式累积的正文」。
@@ -1086,7 +1130,7 @@ class Agent:
                     verify_cmds.append(cmd.strip() or nm)
             result.verify_commands = verify_cmds
             gaps: list[str] = []
-            if step >= limit and not result.stopped:
+            if not unlimited_steps and step >= limit and not result.stopped:
                 gaps.append(f"已达最大步数 {limit}，可能还有未完成的工作")
             failed = [tc.get("name") for tc in result.tool_calls if tc.get("ok") is False]
             if failed:

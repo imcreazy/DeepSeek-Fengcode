@@ -174,10 +174,49 @@ class ConfigManager:
                     self.save()
                 self._load_env()
                 return cfg
+            # ★ 迁移历史默认值：老版本把某些默认值写进了用户配置，之后代码改了默认值，
+            #   但**已写进文件的旧值不会自动更新** —— 于是用户一直跑在过时的行为上。
+            #   实测踩过两次：max_tokens=8192（输出被截断）、max_steps=30（长任务被掐断）。
+            #   ★★ 必须在 `_coerce` **之前**清理 data —— 否则 cfg 已按旧值构造完毕，
+            #   再删 data 里的字段就晚了（首次实现正是踩了这个顺序坑，验证时才发现）。
+            migrated = self._migrate_legacy_defaults(data)
             cfg = self._coerce(data)
             self._config = cfg
+            if migrated:
+                try:
+                    self.save(backup=True)
+                except Exception:
+                    pass   # 落盘失败不影响本次加载（内存里的 cfg 已是新默认值）
             self._load_env()
             return cfg
+
+    # 旧默认值 → 说明。值是「老版本写进配置的默认」，不是用户有意设置。
+    # ★ 只清理**恰好等于旧默认值**的项：用户若真想要那个数，它会和新默认不同，
+    #   不会被误改（而这两个值历史上都不在界面上暴露，人为设置的可能性极低）。
+    _LEGACY_DEFAULTS: dict[tuple[str, str], tuple[Any, str]] = {
+        # (配置段, 字段) -> (旧默认值, 为什么要迁移)
+        ("llm", "max_tokens"): (8192, "旧默认值会把输出截断在 8192，已改为不限制"),
+        ("agent", "max_steps"): (30, "旧默认值会在 30 步硬掐断长任务，已改为不限步数"),
+    }
+
+    def _migrate_legacy_defaults(self, data: dict) -> bool:
+        """把配置里残留的「旧默认值」清掉，返回是否发生了改动。
+
+        为什么必须做：代码改了默认值，但**已经写进 config.toml 的值不会变** ——
+        用户明明装了新版，行为却还是旧的（实测两次：输出截断在 8192、长任务卡 30 步）。
+        """
+        changed = False
+        for (section, field), (old, why) in self._LEGACY_DEFAULTS.items():
+            sec = data.get(section)
+            if not isinstance(sec, dict) or field not in sec:
+                continue
+            if sec[field] != old:
+                continue
+            del sec[field]
+            changed = True
+            # 不引入日志依赖：这个模块没有 logger，且迁移只在启动时发生一次，
+            # 静默清理即可（需要追溯时看 config.toml.bak-* 备份）。
+        return changed
 
     def _coerce(self, data: dict) -> Config:
         """把原始 dict 转成 Config；失败时降级为"默认 + 尽力合并"。"""

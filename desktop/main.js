@@ -438,6 +438,46 @@ function createWindow() {
 
   mainWindow.loadURL(SPLASH).catch(() => {});
 
+  // ★ 右键菜单：桌面版此前**完全没有**这个功能 —— Electron 不像浏览器那样自带右键菜单，
+  //   不主动实现就什么都弹不出来，用户反映「对话区右键不能复制/粘贴」正是这个原因。
+  //   `params.editFlags` 由 Chromium 给出当前可用的编辑动作（有无选中文字、输入框是否可编辑），
+  //   据此禁用不可用的项，避免出现点了没反应的菜单项。
+  mainWindow.webContents.on("context-menu", (event, params) => {
+    const f = params.editFlags || {};
+    const hasSel = !!(params.selectionText || "").trim();
+    const items = [
+      // 复制：有选中文字才可用
+      { label: "复制", role: "copy", enabled: hasSel || f.canCopy === true },
+      // 剪切/粘贴：只在可编辑区域（输入框）出现
+      ...(f.canCut ? [{ label: "剪切", role: "cut" }] : []),
+      ...(f.canPaste ? [{ label: "粘贴", role: "paste" }] : []),
+      // 全选：始终可用（正文也能全选）
+      { label: "全选", role: "selectAll" },
+      { type: "separator" },
+      // 链接与图片：按需出现，用系统方式打开/保存，避免在应用内跳走
+      ...(params.linkURL
+        ? [{ label: "在浏览器中打开链接", click: () => shell.openExternal(params.linkURL) }]
+        : []),
+      ...(params.mediaType === "image" && params.srcURL
+        ? [{ label: "复制图片地址", click: () => clipboard.writeText(params.srcURL) }]
+        : []),
+      // 开发辅助：有选中文字时提供「搜索」入口，便于查错
+      ...(hasSel
+        ? [{
+            label: `搜索「${(params.selectionText || "").trim().slice(0, 12)}」`,
+            click: () => shell.openExternal(
+              "https://www.bing.com/search?q=" + encodeURIComponent((params.selectionText || "").trim())
+            ),
+          }]
+        : []),
+    ];
+    try {
+      Menu.buildFromTemplate(items).popup({ window: mainWindow });
+    } catch (e) {
+      log("右键菜单构建失败：", e.message);
+    }
+  });
+
   // 外部链接用系统浏览器打开，不在应用内跳走
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//.test(url) && !url.startsWith(BASE_URL)) {
