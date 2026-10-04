@@ -955,6 +955,18 @@ td.mono, th.mono { font-family: "SF Mono", Consolas, monospace; font-size: calc(
 .turn-toggle:hover { color: var(--accent); border-color: var(--accent); }
 .msg.user .turn-toggle { order: 2; }
 .msg-wrap.turn-hidden { display: none; }
+/* ★ 连续同类工具调用：后续卡片默认隐藏，由组首的开关手动展开。
+   ★ 实测：模型清理临时文件时连续调了 25 次 file_ops，界面上就是 25 张几乎一样的卡片。
+   ★ 用 class 而非改 DOM 结构：这些卡片仍是 .msg-wrap 兄弟，轮次折叠与时间线逻辑不受影响。 */
+.msg-wrap.tool-dup { display: none; }
+.msg-wrap.tool-dup.tool-open { display: block; }
+.tool-group-bar {
+  display: block; width: 100%; margin: 2px 0 0; padding: 3px 8px;
+  background: transparent; border: 1px dashed var(--border-strong); border-radius: 8px;
+  color: var(--text-dim); font-size: calc(11.5px * var(--ui-scale));
+  cursor: pointer; font-family: inherit;
+}
+.tool-group-bar:hover { color: var(--text); background: var(--hover, rgba(0,0,0,.04)); }
 /* 被折叠的那一轮：气泡淡一点，提示这一轮是收起状态 */
 .msg-wrap.turn-collapsed > .msg.user .content { opacity: .72; }
 

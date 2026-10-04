@@ -571,6 +571,7 @@ const S = {
   theme: "light",
   reasoningOpen: {},
   toolNodes: new Map(),
+  _tgSeq: 0,                // 同类工具调用折叠组的自增编号（见 _groupToolCard）
   pendingApproval: [],
   workspace: "",            // 当前工作区名
   workspaces: [],           // 项目（工作区）列表
@@ -2625,9 +2626,82 @@ function renderToolCard(t) {
   const holder = document.createElement("div");
   holder.className = "msg-wrap";
   holder.innerHTML = html;
+  holder.dataset.toolName = t.name || "";
   msgBox().appendChild(holder);
+  // ★ 连续同类调用折叠成一组（实测：模型清理临时文件时连调 25 次 file_ops，
+  //   界面上就是 25 张几乎一样的卡片，把正文全挤没了）。
+  //   ★ 失败的不折叠 —— 异常必须一眼可见，藏起来等于骗用户。
+  //   ★★ 必须在 appendChild **之后**再分组：分组时要数「本组现有几张」，
+  //   卡片还没进 DOM 就数，开关上的计数会永远少一张（验证脚本当场抓到）。
+  if (t.ok !== false) { try { _groupToolCard(holder); } catch (e) {} }
   scrollDown();
   return $(".tool", holder);
+}
+
+/** 若上一张卡片是**同名**工具，把本卡并入该组：默认隐藏，由组首的手动开关展开。
+    ★ 判据是「紧邻的上一张」——中间夹了正文/思考就不算连续，另开一组。 */
+function _groupToolCard(holder) {
+  const name = holder.dataset.toolName || "";
+  if (!name) return;
+  const wraps = msgBox().querySelectorAll(".msg-wrap");
+  if (wraps.length < 2) return;                    // 只有自己 → 无从分组
+  const prev = wraps[wraps.length - 2];            // holder 已 append，末位是自己，前一张是倒数第二
+  if (!prev.querySelector(".tool")) return;        // 前一张不是工具卡 → 不连续
+  if ((prev.dataset.toolName || "") !== name) return;
+  if (prev.classList.contains("tool-dup") === false) {
+    // 前一张是组首：给它分配组号
+    prev.dataset.toolGroup = "tg" + (++S._tgSeq);
+  }
+  const gid = prev.dataset.toolGroup;
+  holder.dataset.toolGroup = gid;
+  holder.classList.add("tool-dup");
+  // 组首 = 该组里第一张非折叠的卡片
+  const first = msgBox().querySelector(`.msg-wrap[data-tool-group="${gid}"]:not(.tool-dup)`) || prev;
+  _refreshToolGroupBar(first, gid);
+}
+
+/** 刷新组首的开关文案（成员数实时变，点一下展开 / 收起整组）。 */
+function _refreshToolGroupBar(first, gid) {
+  if (!first) return;
+  let bar = first.querySelector(":scope > .tool-group-bar");
+  if (!bar) {
+    bar = document.createElement("button");
+    bar.type = "button";
+    bar.className = "tool-group-bar";
+    bar.dataset.toolGroup = gid;
+    bar.onclick = (e) => {
+      e.preventDefault();
+      const g = bar.dataset.toolGroup;
+      const dups = msgBox().querySelectorAll(`.msg-wrap[data-tool-group="${g}"].tool-dup`);
+      if (!dups.length) return;
+      const open = !dups[0].classList.contains("tool-open");
+      dups.forEach((d) => d.classList.toggle("tool-open", open));
+      _refreshToolGroupBar(first, g);
+    };
+    first.appendChild(bar);
+  }
+  const n = msgBox().querySelectorAll(`.msg-wrap[data-tool-group="${gid}"]`).length;
+  const open = !!first.parentNode &&
+    (msgBox().querySelector(`.msg-wrap[data-tool-group="${gid}"].tool-dup.tool-open`) !== null);
+  bar.textContent = `同类调用共 ${n} 次 · ${open ? "点击收起" : "点击展开"}`;
+}
+
+/** 某张卡片变成失败时，把它从折叠组里放出来（异常不能被藏住）。 */
+function _ungroupIfFailed(wrap) {
+  if (!wrap || !wrap.classList.contains("tool-dup")) return;
+  const gid = wrap.dataset.toolGroup;
+  wrap.classList.remove("tool-dup", "tool-open");
+  delete wrap.dataset.toolGroup;
+  const first = msgBox().querySelector(`.msg-wrap[data-tool-group="${gid}"]:not(.tool-dup)`);
+  const left = msgBox().querySelectorAll(`.msg-wrap[data-tool-group="${gid}"].tool-dup`).length;
+  if (!left) {
+    // 组里只剩组首一张 → 撤掉开关
+    const bar = first && first.querySelector(":scope > .tool-group-bar");
+    if (bar) bar.remove();
+    if (first) delete first.dataset.toolGroup;
+  } else {
+    _refreshToolGroupBar(first, gid);
+  }
 }
 function updateToolCard(name, data, done) {
   let node = S.toolNodes.get(name + "|" + (data.index == null ? "" : data.index));
@@ -2641,6 +2715,8 @@ function updateToolCard(name, data, done) {
   if (!node) return;
   node.classList.remove("run");
   node.classList.toggle("err", data.ok === false);
+  // ★ 失败的卡片必须从折叠组里放出来 —— 异常藏起来等于骗用户。
+  if (data.ok === false) { try { _ungroupIfFailed(node.closest(".msg-wrap")); } catch (e) {} }
   const sum = $("summary", node);
   const spin = $(".loading", sum);
   if (spin) {
@@ -2922,6 +2998,18 @@ async function send() {
   //   每 50ms 最多重绘一次，最终 result 再用完整文本精确重绘一遍。
   let streamBuf = "";
   let rafPending = false;
+  // ★★★ 同步落盘：把缓冲里的正文**立刻**写进当前气泡（不等 requestAnimationFrame）。
+  //   为什么必须有它（实测「有输出但不显示、切会话才回来」的根因）：
+  //   `paintStream` 用 rAF **异步**写 DOM，而同一个网络分片里的多条 SSE 事件是被
+  //   processPart 的 for 循环**同步连续处理**的 —— 期间 rAF 一次都不执行。
+  //   于是 `text(A) → tool.start → text(B)` 这样的序列里，tool.start 会**同步**
+  //   把 assistEl / streamBuf 置空，而 A 还躺在缓冲里没画出来 → **永久丢失**。
+  //   （切会话走 renderStored 从库里重画，所以又"回来了"。）
+  //   修法：凡是**要丢弃当前缓冲**的地方，先调它把内容落盘。
+  const flushStream = () => {
+    rafPending = false;                    // 取消待执行的 rAF（内容马上由这里写）
+    if (assistEl && streamBuf) assistEl.innerHTML = md(streamBuf);
+  };
   const paintStream = () => {
     if (rafPending) return;
     rafPending = true;
@@ -2943,6 +3031,9 @@ async function send() {
     //   但切换会话再切回来就正常 —— 因为那条路走 applySessionUsage，不经 handleEvent）。
     //   挂在这里之后，handleEvent 通过参数 c 就能读到，不再依赖外层作用域。
     ownerSid: S.sessionId || "",
+    // ★★★ 同步落盘句柄：handleEvent 是模块级函数，只能通过参数 c 访问它。
+    //   （1.2.15 的教训：模块级函数直接引用 send 的局部变量会抛 ReferenceError 并被吞掉。）
+    flush: flushStream,
     get assist() { return assistEl; }, set assist(v) { assistEl = v; },
     get pending() { return pendingEl; }, set pending(v) { pendingEl = v; },
     get reasoning() { return reasoningEl; }, set reasoning(v) { reasoningEl = v; },
@@ -3082,6 +3173,10 @@ async function send() {
     $("#send-btn").disabled = false;
     $("#stop-btn").style.display = "none";
     setStatus("ok", "就绪");
+    // ★★★ 先把缓冲里的正文同步落盘，再判断气泡是不是空的。
+    //   否则 rAF 还没执行时 textContent 就是空的，这里会**误删一个其实有内容的气泡**
+    //   —— 实测「最终答复也一起没了」的直接原因。
+    try { streamContext.flush(); } catch (e) {}
     if (assistEl && !assistEl.textContent.trim()) {
       assistEl.closest(".msg-wrap").remove();
     }
@@ -3411,6 +3506,10 @@ function handleEvent(ev, c) {
       //   ①同一轮界面上出现两段（前言 + 结论）；②重启后只剩库里的结论那段
       //   ——正是实测「发你好输出两次、重启才变一次」的机理。
       if (c.assist || (c.buf && c.buf.trim())) {
+        // ★★★ 先把缓冲里的正文**同步**落盘，再置空。
+        //   否则这段文字还躺在 rAF 队列里、气泡已被指向别处 → 永久丢失
+        //   （实测「有输出但不显示、切会话才回来」）。
+        try { c.flush(); } catch (e) {}
         c.finishTextSegment = true;
         try {
           const wrap = c.assist && c.assist.closest(".msg-wrap");
@@ -3574,6 +3673,9 @@ function handleEvent(ev, c) {
       break;
     }
     case "result": {
+      // ★★★ 收尾前先同步落盘：最后一段正文可能还在缓冲里等 rAF，
+      //   而后面的「清空思考引用 / 移除占位气泡」会改变 DOM —— 先落盘才不会丢。
+      try { c.flush(); } catch (e) {}
       // 回合结束：把「思考中…」的折叠块收尾成「思考过程」，并搬进 AI 消息内部
       if (c.reasoningBox && c.reasoningBox.isConnected && c.rtext) {
         const det = c.reasoningBox.querySelector("details");
