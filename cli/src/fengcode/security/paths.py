@@ -178,6 +178,68 @@ def default_deny_patterns() -> list[str]:
     return list(_WIN_DENY) if os.name == "nt" else list(_POSIX_DENY)
 
 
+# 纯导航命令：只切换当前目录，本身不改动任何东西。
+# ★ 为什么必须单列（实测两个真问题，根因相同：原来只认命令的**第一个词**）：
+#   ① 「始终允许」记错粒度 —— 模型爱写 `cd "<工作区>"` 换行再接真操作，
+#      第一个词是 cd，于是「以后所有 cd 开头的命令都放行」；
+#   ② **可绕过「改仓库状态每次都问」** —— `cd X && git restore .` 被判成「未知操作」
+#      直接放行；而不带 cd 前缀的 `git restore .` 是会拦下来问的。
+#      只消包一层 cd 就绕过了不可逆操作的确认。
+_NAV_COMMANDS = {"cd", "chdir", "pushd", "popd", "set-location", "sl"}
+
+
+def _effective_segment(command: str) -> list[str]:
+    """取命令里**第一个真正有副作用的片段**的词表。
+
+    按 ``&&`` / ``||`` / ``;`` / 换行 分段，跳过只切目录的导航段：
+    `cd X && git restore .` → `['git', 'restore', '.']`（而不是从 `cd` 开始）。
+    ★ 为什么必须跳导航段（实测两个真问题，根因相同：原来只认**第一个词**）：
+      ① 「始终允许」记错粒度 —— 模型爱写 `cd "<工作区>"` 换行再接真操作，
+         第一个词是 cd，于是记成「以后所有 cd 开头的命令都放行」；
+      ② **可绕过「改仓库状态每次都问」** —— `cd X && git restore .` 被判成
+         「未知操作」直接放行，而不带 cd 前缀的 `git restore .` 会拦下来问。
+         包一层 cd 就绕过了不可逆操作的确认。
+    整条都是导航（或解析不出东西）时，退回整条命令的词表。
+    """
+    for seg in re.split(r"&&|\|\||;|\n", command or ""):
+        seg = seg.strip()
+        if not seg:
+            continue
+        try:
+            import shlex
+
+            parts = shlex.split(seg, posix=False)
+        except Exception:
+            parts = seg.split()
+        if not parts:
+            continue
+        word = parts[0].strip('"').strip("'").lower()
+        if word.endswith(".exe"):
+            word = word[:-4]
+        if word in _NAV_COMMANDS:
+            continue
+        return parts
+    try:
+        import shlex
+
+        return shlex.split((command or "").strip(), posix=False)
+    except Exception:
+        return (command or "").strip().split()
+
+
+def effective_program(command: str) -> str:
+    """取命令里**第一个真正有副作用的程序名**（小写、去掉 .exe）。
+
+    ★ 与 `classify_command` 共用同一判据：审批记忆键与「要不要每次都问」
+      必须看同一件事，否则两边会得出不同结论。
+    """
+    parts = _effective_segment(command)
+    if not parts:
+        return ""
+    word = parts[0].strip('"').strip("'").lower()
+    return word[:-4] if word.endswith(".exe") else word
+
+
 class PathGuard:
     """读写路径校验器。"""
 
@@ -380,18 +442,13 @@ def classify_command(command: str) -> str:
     c = (command or "").strip()
     if not c:
         return ""
-    # 取第一段命令（跳过 env 前缀、sudo 等）
-    try:
-        import shlex
-
-        parts = shlex.split(c, posix=False)
-    except Exception:
-        parts = c.split()
-    if not parts:
+    # ★ 取「第一个真正有副作用的片段」，而不是第一个词：
+    #   `cd X && git restore .` 必须照样判成 repo（否则包一层 cd 就绕过了
+    #   「改仓库状态每次都问」），见 `_effective_segment` 的说明。
+    parts = _effective_segment(c)
+    prog = effective_program(c)
+    if not parts or not prog:
         return ""
-    prog = parts[0].strip('"').strip("'").lower()
-    if prog.endswith(".exe"):
-        prog = prog[:-4]
 
     if prog in ("git", "hg"):
         # 找第一个非选项参数作为子命令
@@ -439,5 +496,6 @@ __all__ = [
     "scan_dangerous",
     "scan_dangerous_path",
     "classify_command",
+    "effective_program",
     "default_deny_patterns",
 ]

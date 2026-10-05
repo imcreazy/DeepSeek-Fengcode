@@ -308,7 +308,10 @@ class ToolRegistry:
                     ctx.emit("audit", {"action": tool.name, "target": command or path,
                                        "decision": "deny", "reason": reason})
                     return ToolResult.fail(f"操作被安全策略拒绝：{reason}")
-                ctx.emit("approval.request", req.to_dict())
+                # ★ 不在这里发 approval.request：审批门的 on_request（Agent._on_approval）
+                #   才是通知界面的**唯一**通道，它会在 request() 里发一次。
+                #   为什么必须去掉这里的那次（实测「操作确认一下子弹出四个一模一样的」）：
+                #   重复发两条 × 前端 SSE 与 WebSocket 两条订阅通道 = 4 张卡。
                 dec = await ctx.approval.request(req)
                 ctx.emit("approval.done", {"id": req.id, **dec.to_dict()})
                 if not dec.allowed:

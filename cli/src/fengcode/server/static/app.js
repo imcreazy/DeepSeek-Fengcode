@@ -2157,7 +2157,11 @@ function turnKey(userWrap) {
 function setTurnCollapsed(userWrap, collapsed) {
   let n = userWrap.nextElementSibling;
   while (n && !(n.dataset && n.dataset.userMsg === "1")) {
-    n.classList.toggle("turn-hidden", collapsed);
+    // ★ 待确认卡不参与折叠：它是要用户**立刻处理**的东西，
+    //   跟着这一轮收起来等于把请求藏了（服务端还在阻塞等答复）。
+    if (!(n.dataset && n.dataset.approval === "1")) {
+      n.classList.toggle("turn-hidden", collapsed);
+    }
     n = n.nextElementSibling;
   }
   userWrap.classList.toggle("turn-collapsed", collapsed);
@@ -2212,21 +2216,54 @@ function watchUserScroll() {
   if (!m || m._watchScrollBound) return;
   m._watchScrollBound = true;
   m.addEventListener("wheel", (e) => {
+    // ★★ 内层滚动区（思考区 `.rc`、工具详情的 `<pre>`）自己还能往这个方向滚时，
+    //   这格滚轮是给内层的 —— 别据此改外层的跟随状态。
+    //   为什么（实测复现「打开工具详情后滚轮像卡死」）：内层 <pre> 是
+    //   `max-height:320px; overflow:auto`，滚轮落在它上面时事件仍然**冒泡**到
+    //   #messages，于是「在工具输出里往上翻」被当成「外层要停止跟随」，
+    //   而外层此刻一动没动 —— 用户看到的是滚轮转了、画面纹丝不乱。
+    //   只在「内层已经滚到头、这格要交给外层」时才继续走下面的判断。
+    const inner = e.target && e.target.closest ? e.target.closest(".rc, .tbody pre") : null;
+    if (inner) {
+      const canUp = inner.scrollTop > 0;
+      const canDown = inner.scrollTop + inner.clientHeight < inner.scrollHeight - 1;
+      if ((e.deltaY < 0 && canUp) || (e.deltaY > 0 && canDown)) return;
+    }
+    // ★ 这里只处理「停止跟随」。恢复跟随交给真实 scroll 事件
+    //   （updateFollowTailByPosition）：滚轮事件里 scrollTop 还没被浏览器应用，
+    //   按此刻的距底判断会把「刚上滑一格」误判成「仍在底部」而立刻恢复跟随。
     if (e.deltaY < 0) FOLLOW_TAIL = false;                 // 向上滚 = 我要看上面的
-    else if (m.scrollHeight - m.scrollTop - m.clientHeight < 24) FOLLOW_TAIL = true;
     updateJumpBottom();
   }, { passive: true });
   m.addEventListener("keydown", (e) => {
     if (e.key === "PageUp" || e.key === "ArrowUp" || e.key === "Home") FOLLOW_TAIL = false;
   }, true);
 }
+/** ★ 由**真实 scroll 事件**恢复「跟随底部」。
+    为什么必须放在这里而不是滚轮处理里：滚轮事件触发时浏览器还没把 scrollTop
+    应用上去，此刻读到的距底是「滚动前」的旧值 —— 刚上滑一格（约 100px，
+    小于 180px 阈值）会被误判成「仍在底部」，于是立刻恢复跟随、下一帧又被拽回底
+    （实测「滚轮转了却弹回最下面」）。scroll 事件里的距底才是滚动后的真值。
+    只有真的贴底才恢复，保持「内容增长不算上滑」这条老约定。 */
+function updateFollowTailByPosition() {
+  const m = msgBox();
+  if (!m) return;
+  if (m.scrollHeight - m.scrollTop - m.clientHeight < 24) FOLLOW_TAIL = true;
+}
 function updateJumpBottom() {
   const m = msgBox(), b = $("#jump-bottom");
   if (!m || !b) return;
   const away = m.scrollHeight - m.scrollTop - m.clientHeight > 180;
-  // 离开底部一段距离就认为用户主动脱离了跟随；回到阈值内则恢复跟随。
+  // ★★★ 这里**只单向**「停止跟随」，绝不反向置回 true。
+  //   为什么（实测复现「打开工具详情后滚轮像卡死、强制锁在最下面」）：
+  //   恢复跟随所需的「距底 < 24px」在**滚动生效之前**读到的是旧位置 ——
+  //   用户滚一格（约 100px，仍不到 180px 阈值）时，wheel 分支刚把 FOLLOW_TAIL
+  //   置 false，紧接着这里又按旧位置把它改回 true，于是流式期间的每一次
+  //   scrollDown() 都把视图拽回底部。
+  //   改为：由 updateFollowTailByPosition() 在**真实 scroll 事件**里恢复跟随
+  //   （那时距底是滚动后的真实值）。距底判断本身仍不能写成「非贴底即 false」：
+  //   内容一增长距底立刻变大，会把停在底部的用户误判成「已上滑」。
   if (away) FOLLOW_TAIL = false;
-  else FOLLOW_TAIL = true;
   // ★ 「回到底部」也要在**思考区**里出现：
   //   用户展开思考、上滑看早前内容时，外层消息区可能仍在底部，
   //   只按外层判断按钮就不会出现（实测「回到底部在思考页面用不了」）。
@@ -2256,6 +2293,9 @@ function jumpToBottom() {
 function clearMessages() {
   msgBox().innerHTML = "";
   S.msgSeq = 0;
+  // ★ 重建后把「仍未答复」的确认卡放回来：它们在消息流里，会被上面这行一起抹掉，
+  //   而服务端那次工具调用还在阻塞等答复（旧版卡片在浮层里，不受影响；搬进对话流必须自己恢复）。
+  try { restorePendingApprovals(); } catch (e) {}
   refreshMsgNav();
 }
 
@@ -3560,8 +3600,7 @@ function handleEvent(ev, c) {
       break;
     }
     case "approval.done": {
-      const el = $("#ap-" + d.id);
-      if (el) el.remove();
+      removeApprovalCard(d.id);
       if (!d.allowed) toast("已拒绝该操作", "");
       break;
     }
@@ -3884,6 +3923,32 @@ function showAsk(a) {
 }
 
 function showApproval(a) {
+  // ★★ 同一条审批只留一张卡。为什么需要去重（实测「突然弹出四个一模一样的风险提示」）：
+  //   ① 后端对同一次审批会发两条 approval.request（原因见 tools/base.py 的说明）；
+  //   ② 前端的 SSE（/api/chat）与 WebSocket 是**两条独立通道**，都订阅同一个事件总线，
+  //      同一条事件会被两条各送一份 → 2 × 2 = 4 张卡。
+  //   按请求 id 幂等：已经有一张就直接返回，不再叠。
+  if (!a || !a.id) return;
+  if (document.getElementById("ap-" + a.id)) return;
+  // ★ 登记待确认的请求：卡片现在活在消息流里，而切换会话 / 清空对话会重建 #messages，
+  //   卡片会被一起抹掉 —— 但服务端那次工具调用**仍在阻塞等答复**。
+  //   旧版靠「卡片挂在消息区外面的浮层」侥幸不受影响，搬进对话流就必须自己记住。
+  S.pendingApprovals = S.pendingApprovals || {};
+  S.pendingApprovals[a.id] = a;
+  renderApprovalCard(a);
+  scrollDown();
+  try {
+    if (window.Notification && Notification.permission === "default") Notification.requestPermission();
+  } catch (e) {}
+}
+
+/** 渲染一张确认卡（**在对话流里**，不再挂在右下角浮层）。
+    ★ 为什么改到对话内：权限请求应当跟着对话流走 ——
+      浮层固定在右下角，会盖住右侧信息栏，且不随对话滚动，多张时只能堆在角落。 */
+function renderApprovalCard(a) {
+  const wrap = document.createElement("div");
+  wrap.className = "msg-wrap approval-wrap";
+  wrap.dataset.approval = "1";                 // ★ 轮次折叠必须跳过它（见 setTurnCollapsed）
   const el = document.createElement("div");
   el.className = "approval";
   el.id = "ap-" + a.id;
@@ -3899,7 +3964,8 @@ function showApproval(a) {
       <button class="btn sm" data-a="always">始终允许</button>
       <button class="btn danger sm" data-a="deny">拒绝</button>
     </div>`;
-  $("#approvals").appendChild(el);
+  wrap.appendChild(el);
+  msgBox().appendChild(wrap);
   $$("[data-a]", el).forEach((b) => b.onclick = async () => {
     const mode = b.dataset.a;
     try {
@@ -3911,12 +3977,31 @@ function showApproval(a) {
           action: a.action, target: a.target, session_id: a.session_id || S.sessionId,
         },
       });
-      el.remove();
+      removeApprovalCard(a.id);
     } catch (e) { toast("提交失败：" + e.message, "err"); }
   });
-  try {
-    if (window.Notification && Notification.permission === "default") Notification.requestPermission();
-  } catch (e) {}
+}
+
+/** 移除某条确认卡（连同待确认登记一起清掉）。 */
+function removeApprovalCard(id) {
+  const el = document.getElementById("ap-" + id);
+  if (el) {
+    const w = el.closest(".msg-wrap") || el;
+    w.remove();
+  }
+  if (S.pendingApprovals) delete S.pendingApprovals[id];
+}
+
+/** 重建消息区后把「仍未答复」的确认卡放回来（切换会话 / 清空对话时调用）。
+    ★ 只放回属于**当前会话**的：别的会话的请求跟着它自己那条流，不该串到这边来。 */
+function restorePendingApprovals() {
+  const all = S.pendingApprovals || {};
+  for (const id of Object.keys(all)) {
+    if (document.getElementById("ap-" + id)) continue;
+    const a = all[id];
+    if (a.session_id && S.sessionId && a.session_id !== S.sessionId) continue;
+    renderApprovalCard(a);
+  }
 }
 function setStatus(kind, text) {
   const dot = $("#sdot");
@@ -8208,7 +8293,10 @@ document.addEventListener("scroll", (e) => {
   updateJumpBottom();
 }, true);
 const messagesEl = $("#messages");
-if (messagesEl) messagesEl.addEventListener("scroll", updateJumpBottom, { passive: true });
+if (messagesEl) messagesEl.addEventListener("scroll", () => {
+  updateFollowTailByPosition();   // 真的贴底了才恢复跟随（读滚动后的真实距底）
+  updateJumpBottom();
+}, { passive: true });
 watchUserScroll();
 const jumpBottom = $("#jump-bottom");
 if (jumpBottom) jumpBottom.onclick = jumpToBottom;

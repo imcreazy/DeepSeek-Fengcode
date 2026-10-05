@@ -12,8 +12,12 @@ ROOT = Path(__file__).resolve().parent.parent
 SKIP_DIRS = {
     "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
     ".venv", "venv", "build", "dist", "node_modules", ".fengcode", "_shots", ".agents",
+    # ★ 与 push_github.py / release.py 对齐：本地截图与交付目录都不推送。
+    #   漏了它们只会让「将上传 N 个文件」的概览偏大（安全检查本身不受影响），
+    #   但三处规则必须一致，否则迟早会漏掉真的该挡的目录。
+    "_ui_shots", "shots", "交付", "发布版", "win-unpacked", "fengcode-data", "release",
 }
-SKIP_DIR_PREFIXES = (".fengcode", "_tmp_", "_probe")
+SKIP_DIR_PREFIXES = (".fengcode", "_tmp_", "_probe_", "_test_", "_guard_")
 SKIP_DIR_SUFFIXES = (".egg-info",)
 SKIP_EXT = {".pyc", ".pyo", ".db", ".db-wal", ".db-shm", ".log", ".zip"}
 # ★★ 密钥与凭证类文件（与 push_github.py / release.py 的规则保持一致）

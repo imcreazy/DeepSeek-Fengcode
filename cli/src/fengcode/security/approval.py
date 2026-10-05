@@ -22,7 +22,7 @@ from typing import Any, Callable
 from ..config.schema import PermissionsConfig
 from ..storage.stats import AuditStore
 from ..utils import new_id
-from .paths import PathGuard, classify_command, scan_dangerous, scan_dangerous_path
+from .paths import PathGuard, classify_command, effective_program, scan_dangerous, scan_dangerous_path
 
 
 @dataclass
@@ -295,10 +295,15 @@ class ApprovalGate:
         self._always_allows.clear()
 
     def _memory_key(self, session_id: str | None, action: str, target: str) -> str:
-        head = (target or "").strip().split("\n")[0][:80]
-        # 命令只保留第一个词，避免把参数差异当成不同操作
-        if target and not target.startswith(("/", "\\", "C:", "D:")):
-            head = head.split()[0] if head.split() else head
+        t = (target or "").strip()
+        if t.startswith(("/", "\\", "C:", "D:")):
+            # 目标是路径（不是命令）：按路径首段记忆
+            head = t.split("\n")[0][:80]
+        else:
+            # ★ 按「真正要干的那件事」记忆，而不是命令的第一个词。
+            #   见 paths.effective_program：模型爱写 `cd "<工作区>"` 换行再接操作，
+            #   取第一个词会记成 `cd`，等于「以后所有 cd 开头的命令都放行」。
+            head = effective_program(t)
         return f"{session_id or '-'}|{action}|{head}"
 
     def _log(self, req: ApprovalRequest, dec: Decision) -> None:

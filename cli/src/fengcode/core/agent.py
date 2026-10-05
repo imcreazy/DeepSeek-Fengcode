@@ -1190,7 +1190,7 @@ class Agent:
         await self._auto_remember(user_input, content, sid)
         # ★ 「重要任务要不要存进记忆」不再在这里弹窗：改由模型自己判断，
         #   并在最终答复的末尾用一句话问用户（见 prompts.SUBMIT_CHECKLIST 第 6 条）。
-        #   为什么不在代码里问：用户明确要求「让 ai 自主判断然后在最终的输出里询问」，
+        #   为什么不在代码里问：改为由模型自主判断、在最终输出里询问，
         #   而不是弹一个需要点击的选项框。
 
         self.bus.emit(Ev.USAGE, {"usage": total_usage, "last_usage": last_usage,
