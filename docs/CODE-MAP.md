@@ -113,7 +113,8 @@
 | 页面路由 / 页面注册表 | `go()` / `PAGES` |
 | 通用下拉菜单（权限/模式/模型共用） | `openChoiceMenu()` / `openChoiceMenuAt()` |
 | 权限档位 | `setPerm()` / `PERMS` / `paintPermChip()` |
-| 待办面板 | `renderTodoPanel()` / `refreshTodos()` |
+| 待办面板 | `renderTodoPanel()` / `refreshTodos()` / `syncTodoBlockVar()` |
+| 待办面板的占位高度 | `syncTodoBlockVar()` —— 写 `#chat-page` 的 `--todo-block-h`，叠加进 `#messages` 的底部留白（缺它就复现「滚到底仍被面板挡住」），并在高度变化时把贴底的视图收敛回底部 |
 | 右侧信息栏 | `renderInfoPanel()` |
 | 底部状态栏 | `renderStatusBar()` |
 | 设置中心外壳 | `SS`（渲染宿主 `#settings-render`，搬节点用 `replaceChildren`） |
