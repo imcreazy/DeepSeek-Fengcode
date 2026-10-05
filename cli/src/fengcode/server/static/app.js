@@ -1078,6 +1078,11 @@ async function go(page, opt) {
   if (page === "chat" && typeof window.__syncComposerBlock === "function") {
     setTimeout(() => window.__syncComposerBlock(), 0);
   }
+  // ★ 待办面板的占位高度同理：在对话页不可见时量到的是 0，
+  //   切回对话页必须按真实高度重算一次（否则滚到底仍会漏一行）。
+  if (page === "chat") {
+    setTimeout(() => { try { syncTodoBlockVar(); } catch (e) {} }, 0);
+  }
 }
 
 /* ---------------- 设置中心 ---------------- */
@@ -2904,6 +2909,36 @@ const TODO_MARK = {
   pending: "○", in_progress: "◐", completed: "●",
   blocked: "!", cancelled: "×",
 };
+/* ★ 面板是否展开：**默认收起**（AI 刚排好待办时不再自动摊开占掉半屏），
+   由标题栏手动展开；按会话记住，切会话不串（见 renderTodoPanel）。 */
+const TODO_OPEN = Object.create(null);
+
+/* ★ 待办面板的占位高度（--todo-block-h）。
+   面板浮在输入卡片上方，它盖住的那一段同样属于「消息不该露出来」的区域；
+   #messages 的底部留白只算了输入区，少了这一段，滚到底时最后一行就压在面板背后
+   （实测「鼠标滑到最下面还是挡住」）。
+   变量与 --composer-block-h 同一个宿主（#chat-page），面板隐藏时为 0。 */
+function syncTodoBlockVar() {
+  const host = $("#chat-page");
+  if (!host) return;
+  const box = $("#todo-panel");
+  let h = 0;
+  if (box && !box.hidden) {
+    h = box.getBoundingClientRect().height + 8;   // 8 = .todo-panel 的 bottom 让位量
+  }
+  const next = Math.ceil(h) + "px";
+  if (host.style.getPropertyValue("--todo-block-h") === next) return;
+  // ★★ 留白一变，#messages 的 scrollHeight 就跟着变：正贴着底看流式的用户
+  //   距底会被这一下撑大，下一次 updateJumpBottom() 就读成「已上滑」而停掉跟随
+  //   （用户看到的是「输出不再自动滚了」）。
+  //   所以先记下改之前是否贴底，改完立刻把视图收敛回底部 —— 那次赋值会触发
+  //   真实 scroll 事件，`updateFollowTailByPosition()` 再把 FOLLOW_TAIL 置回 true。
+  const m = msgBox();
+  const pinned = m ? (m.scrollHeight - m.scrollTop - m.clientHeight < 24) : false;
+  host.style.setProperty("--todo-block-h", next);
+  if (pinned && m) m.scrollTop = m.scrollHeight;
+}
+window.addEventListener("resize", () => { try { syncTodoBlockVar(); } catch (e) {} });
 
 async function refreshTodos() {
   if (!S.sessionId) return;
@@ -2918,7 +2953,12 @@ async function refreshTodos() {
      前端：事件丢了/晚到时面板就停住。
    这里补一条兜底：回合结束（result）后再拉一次，保证面板与库一致。 */
 function refreshTodosSoon() {
-  setTimeout(() => { try { refreshTodos(); } catch (e) {} }, 120);
+  setTimeout(() => {
+    try { refreshTodos(); } catch (e) {}
+    // 面板的显示/隐藏与行数变化都会改它占的高度，补一次重算（渲染里已算过一次，
+    // 那次可能量在布局尚未稳定时）。
+    setTimeout(() => { try { syncTodoBlockVar(); } catch (e) {} }, 150);
+  }, 120);
 }
 
 function renderTodoPanel(tasks, summary, goals) {
@@ -2926,7 +2966,11 @@ function renderTodoPanel(tasks, summary, goals) {
   if (!box) return;
   const list = tasks || [];
   const goal = (goals || [])[0] || null;
-  if (!list.length && !goal) { box.hidden = true; box.innerHTML = ""; return; }
+  if (!list.length && !goal) {
+    box.hidden = true; box.innerHTML = "";
+    try { syncTodoBlockVar(); } catch (e) {}
+    return;
+  }
   const done = (summary && summary.completed) || 0;
   const total = (summary && summary.total) || list.length;
   const pct = total ? Math.round((done / total) * 100) : 0;
@@ -2938,6 +2982,8 @@ function renderTodoPanel(tasks, summary, goals) {
       ${t.detail ? `<span class="todo-detail" title="${esc(t.detail)}">${esc(t.detail)}</span>` : ""}
     </div>`;
   }).join("");
+  // ★ 每次重渲染都会重建内层 DOM，展开态必须自己记（否则刷新一次就弹回收起）。
+  const open = !!TODO_OPEN[S.sessionId];
   box.hidden = false;
   box.innerHTML = `
     <div class="todo-head" data-toggle-todo>
@@ -2946,16 +2992,21 @@ function renderTodoPanel(tasks, summary, goals) {
       <span class="todo-count">${done}/${total}</span>
       <span class="todo-bar"><i style="width:${pct}%"></i></span>
       ${goal ? `<span class="todo-goal" title="${esc(goal.objective || "")}">目标 · ${esc((goal.phase || ""))}</span>` : ""}
-      <span class="todo-caret">收起</span>
+      <span class="todo-caret">${open ? "收起" : "展开"}</span>
     </div>
-    <div class="todo-body">${rows}</div>`;
+    <div class="todo-body"${open ? "" : " hidden"}>${rows}</div>`;
   const head = $("[data-toggle-todo]", box);
   const body = $(".todo-body", box);
   const caret = $(".todo-caret", box);
   if (head && body) head.onclick = () => {
-    const hid = body.hidden = !body.hidden;
-    if (caret) caret.textContent = hid ? "展开" : "收起";
+    body.hidden = !body.hidden;
+    // ★ 记的是「翻转后」的状态：写 `!body.hidden` 的旧值会让展开态在
+    //   下一次重渲染（task.update 到来）时被弹回收起（实测）。
+    TODO_OPEN[S.sessionId] = !body.hidden;
+    if (caret) caret.textContent = body.hidden ? "展开" : "收起";
+    try { syncTodoBlockVar(); } catch (e) {}
   };
+  try { syncTodoBlockVar(); } catch (e) {}
 }
 
 /* ---- 发送 ---- */

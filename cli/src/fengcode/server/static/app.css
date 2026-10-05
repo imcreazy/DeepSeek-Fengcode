@@ -706,7 +706,9 @@ body.resizing-x, body.resizing-x * { cursor: ew-resize !important; }
    看起来像右栏的一部分。「放到对话框正上方」。 */
 .jump-bottom {
   position: absolute; left: 50%; transform: translateX(-50%);
-  bottom: calc(var(--composer-block-h, 120px) + 10px);
+  /* ★ 同样让开待办面板：两者都浮在卡片上方，少了 --todo-block-h
+     就会直接叠在面板上（「回到底部」按钮压在待办上）。 */
+  bottom: calc(var(--composer-block-h, 120px) + var(--todo-block-h, 0px) + 10px);
   z-index: 14; display: none;
   border: 1px solid var(--border-strong); border-radius: 999px; padding: 7px 12px;
   color: var(--text); background: var(--bg-elev); box-shadow: var(--shadow);
@@ -928,8 +930,15 @@ td.mono, th.mono { font-family: "SF Mono", Consolas, monospace; font-size: calc(
    如果消息区只留 12px，文字会从卡片左右各 24px、以及卡片下方 92px 的
    透明区域里露出来。用户要的是「文字到对话框以下直接全都看不到」，
    所以按输入区整块高度预留，消息滚到底也停在这块空白之上。
-   --composer-block-h 由 app.js 在拖拽/恢复时同步（见 syncComposerBlockVar）。 */
-#messages { overflow-y: auto; padding: 22px 0 var(--composer-block-h, 200px); }
+   --composer-block-h 由 app.js 在拖拽/恢复时同步（见 syncComposerBlockVar）。
+   ★ 待办面板同样悬浮在卡片上方（见 .todo-panel），它占的那一块也要留白，
+   否则消息滚到底时最后一行正好压在这块空白里、被面板盖住（实测「滚到最下面还是挡住」）。
+   --todo-block-h 由 app.js 在待办渲染/展开收起时同步（见 syncTodoBlockVar），
+   面板隐藏时为 0，展开时含面板高度与 8px 间隙。 */
+#messages {
+  overflow-y: auto;
+  padding: 22px 0 calc(var(--composer-block-h, 200px) + var(--todo-block-h, 0px));
+}
 .msg-wrap { max-width: 880px; margin: 0 auto; padding: 0 24px; }
 .msg { margin-bottom: 18px; display: flex; gap: 12px; align-items: flex-start; }
 .msg .avatar {
@@ -1589,7 +1598,11 @@ body.resizing #infopanel { transition: none; }
      position:absolute; bottom:0 —— 两者落在同一块区域（实测待办 748~868px、
      输入卡片 754~862px，被压住 114px）。
      改法照搬 #jump-bottom：脱离文档流，底部按「输入区整块高度」往上让位；
-     第 2 行随之归零，#messages 铺满，待办浮在卡片之上不互相遮挡。 */
+     第 2 行随之归零，#messages 铺满，待办浮在卡片之上不互相遮挡。
+     ★ 光让位还不够 —— #messages 的底部留白只算了输入区，面板自己占的那段没算，
+     滚到底时最后一行正好落在面板背后（实测仍被挡）。
+     所以面板高度另记一份 --todo-block-h，由 app.js 同步（见 syncTodoBlockVar），
+     加进 #messages 的底部留白。 */
   position: absolute; left: 0; right: 0; z-index: 6;
   bottom: calc(var(--composer-block-h, 200px) + 8px);
   margin: 0 auto;
@@ -1616,6 +1629,7 @@ body.resizing #infopanel { transition: none; }
   text-overflow: ellipsis; white-space: nowrap;
 }
 .todo-head .todo-caret { flex: none; color: var(--text-dim); font-size: calc(11px * var(--ui-scale)); }
+.todo-body[hidden] { display: none; }
 .todo-body { padding: 7px 11px 9px; max-height: 30vh; overflow: auto; }
 .todo-item { display: flex; align-items: baseline; gap: 7px; padding: 2px 0; line-height: 1.55; }
 .todo-item .todo-mark { flex: none; width: 12px; color: var(--text-dim); }

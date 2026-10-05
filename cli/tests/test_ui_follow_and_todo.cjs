@@ -104,3 +104,90 @@ test('待办面板脱离文档流、悬浮在输入卡片上方', () => {
     '不应再保留「在文档流里占一行」的外边距写法'
   );
 });
+
+/* ---------------- 缺陷三：待办面板挡住了最后一行文字（1.2.19） ----------------
+ * 现象：待办面板浮在输入卡片上方，鼠标滑到最下面，最后一行仍被面板盖住。
+ *   根因：#messages 的底部留白只算了输入区（--composer-block-h），
+ *         面板自己占的那一段没算，卡片上方那 200px 空白里正好叠着面板。
+ * 本用例锁死：① 底部留白必须再加一份待办面板的高度；
+ *            ② 这份高度由 JS 同步、面板隐藏时归 0；
+ *            ③ 让位量（8px）两边一致。
+ */
+
+test('消息区底部留白除了输入区，还要加上待办面板占的那段', () => {
+  const i = cssSrc.indexOf('#messages {');
+  assert.ok(i > 0, '应有 #messages 规则');
+  const rule = cssSrc.slice(i, cssSrc.indexOf('}', i));
+  assert.ok(
+    /padding:[^;]*--todo-block-h/.test(rule),
+    '底部留白必须叠加 --todo-block-h：不加就复现「滑到最下面还是被待办挡住」'
+  );
+});
+
+test('待办面板高度由 syncTodoBlockVar 同步，隐藏时归 0', () => {
+  assert.ok(
+    appSrc.includes('function syncTodoBlockVar'),
+    '应有专职函数同步 --todo-block-h'
+  );
+  const i = appSrc.indexOf('function syncTodoBlockVar');
+  const body = appSrc.slice(i, appSrc.indexOf('\n}', i));
+  assert.ok(/let h = 0/.test(body), '面板隐藏时高度必须是 0，否则会白留一块');
+  assert.ok(/--todo-block-h/.test(body), '必须写到 --todo-block-h');
+  assert.ok(
+    /renderTodoPanel/.test(appSrc.slice(appSrc.indexOf('function renderTodoPanel'),
+      appSrc.indexOf('function renderTodoPanel') + 2600)),
+    '面板每次重渲染后都要重算（展开/收起会改高度）'
+  );
+});
+
+test('待办面板的让位量与 JS 记的高度口径一致（8px）', () => {
+  const i = cssSrc.indexOf('.todo-panel {');
+  const rule = cssSrc.slice(i, cssSrc.indexOf('}', i));
+  const m = rule.match(/bottom:\s*calc\(var\(--composer-block-h[^+]*\+\s*(\d+)px\)/);
+  assert.ok(m, '.todo-panel 的 bottom 应是「输入区高度 + Npx」');
+  const px = m[1];
+  const j = appSrc.indexOf('function syncTodoBlockVar');
+  const body = appSrc.slice(j, appSrc.indexOf('\n}', j));
+  assert.ok(
+    body.includes(`+ ${px}`),
+    `JS 记的高度必须带上同一个让位量 ${px}px，否则面板顶端仍会压住文字`
+  );
+});
+
+/* ---------------- 缺陷四：待办面板默认展开（1.2.19） ----------------
+ * 默认收起：AI 刚排好待办时不再自动摊开占掉半屏，
+ * 要看细节由点击标题栏手动展开。
+ * 本用例锁死：① 渲染出来的正文默认 hidden；
+ *            ② 展开态按会话记住（每次重渲染会重建内层 DOM，记不住就弹回去）；
+ *            ③ 记录的是**翻转后**的状态（写翻前值会让展开一刷新就复位）。
+ */
+
+test('待办面板默认收起，展开态按会话记住', () => {
+  const i = appSrc.indexOf('function renderTodoPanel');
+  const body = appSrc.slice(i, i + 2600);
+  assert.ok(
+    /todo-body"\$\{open \? "" : " hidden"\}/.test(body),
+    '渲染时正文必须默认 hidden（展开由用户点标题栏决定）'
+  );
+  assert.ok(body.includes('TODO_OPEN[S.sessionId]'), '展开态必须按会话记住，不能只放 DOM 上');
+});
+
+test('展开态记录写在翻转之后', () => {
+  const i = appSrc.indexOf('function renderTodoPanel');
+  const body = appSrc.slice(i, i + 2600);
+  const flip = body.indexOf('body.hidden = !body.hidden;');
+  const remember = body.indexOf('TODO_OPEN[S.sessionId] =');
+  assert.ok(flip > 0 && remember > 0, '应有「翻转 body.hidden」与「记下展开态」两处');
+  assert.ok(
+    remember > flip,
+    '必须先翻转再记录：`TODO_OPEN = !body.hidden` 写在翻转前记的是旧值，'
+    + '展开后下一次重渲染（task.update）就被弹回收起（实测）'
+  );
+});
+
+test('收起态也要显式覆盖 hidden（否则正文照样摊开）', () => {
+  assert.ok(
+    /\.todo-body\[hidden\]\s*\{[^}]*display:\s*none/.test(cssSrc),
+    'markdown 里大量元素是 display:flex，单靠 hidden 属性不一定真隐藏，要显式压住'
+  );
+});
