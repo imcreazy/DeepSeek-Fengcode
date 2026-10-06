@@ -527,6 +527,22 @@ body.resizing-x, body.resizing-x * { cursor: ew-resize !important; }
 .ip-big { font-size: calc(17px * var(--ui-scale)); font-weight: 680; font-variant-numeric: tabular-nums; }
 .ip-sub { font-size: calc(11px * var(--ui-scale)); color: var(--text-dim); }
 
+/* ★ 两列对照（左：本会话累计，右：本回合）。
+   用三列网格：标签列自适应，两列数值等宽右对齐 —— 卡片右侧原本留空较多，
+   正好拿来放第二列数值，不必再往下堆一倍行数。
+   tabular-nums 保证两列数字对齐，否则逐行扫读时会歪。 */
+.ip-cols {
+  display: grid; grid-template-columns: auto 1fr 1fr;
+  gap: 4px 8px; align-items: baseline;
+  font-size: calc(12px * var(--ui-scale));
+}
+.ip-cols .k { color: var(--text-dim); }
+.ip-cols .h {
+  font-size: calc(10.5px * var(--ui-scale)); color: var(--text-faint);
+  text-align: right; font-weight: 500;
+}
+.ip-cols .v { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+
 /* 进度条（上下文档位） */
 .ip-bar {
   height: 7px; border-radius: 8px; background: var(--bg-active);
@@ -834,6 +850,20 @@ details.prov-more > summary:hover { color: var(--text); }
   font-size: calc(12px * var(--ui-scale)); line-height: 1.7; color: var(--text-soft);
   white-space: pre-wrap; word-break: break-word;
 }
+/* ★ 长记忆折叠：默认只显示开头一段，点「展开全文」看完整内容。
+   为什么用 <details> 而不是自己写按钮 + JS：
+     · 设置中心是**搬节点**渲染的，自己绑的 onclick 在搬运后可能失效；
+     · <details> 是浏览器原生折叠，不依赖任何事件绑定，搬去哪都能点。
+    ★ 为什么不再截断到 400 字：截断既不给省略号也不能展开，
+    看起来就像数据被吃掉了一半。 */
+.memo-item .memo-full > summary {
+  cursor: pointer; color: var(--accent); font-size: calc(11.5px * var(--ui-scale));
+  list-style: none; margin-top: 4px; user-select: none;
+}
+.memo-item .memo-full > summary::-webkit-details-marker { display: none; }
+.memo-item .memo-full > summary::after { content: " ▾"; font-size: 10px; }
+.memo-item .memo-full[open] > summary::after { content: " ▴"; }
+.memo-item .memo-full > .memo-fulltext { margin-top: 4px; }
 .memo-empty { color: var(--text-dim); font-size: calc(12px * var(--ui-scale)); padding: 6px 0; }
 
 /* ---- 记忆修订历史（就地展开的版本列表 + 撤回）----
@@ -939,6 +969,11 @@ td.mono, th.mono { font-family: "SF Mono", Consolas, monospace; font-size: calc(
   overflow-y: auto;
   padding: 22px 0 calc(var(--composer-block-h, 200px) + var(--todo-block-h, 0px));
 }
+/* ★ 每个对话一个独立消息容器（pane）。只显示当前会话的那个，其余隐藏但**保留**：
+   运行中的会话切走后仍在后台产出正文/工具卡，切回来要能原样看到，
+   所以不能「切会话就清空重建」。隐藏的 pane 不占空间、也不参与布局。 */
+.msg-pane { display: none; }
+.msg-pane.active { display: block; }
 .msg-wrap { max-width: 880px; margin: 0 auto; padding: 0 24px; }
 .msg { margin-bottom: 18px; display: flex; gap: 12px; align-items: flex-start; }
 .msg .avatar {
@@ -1256,6 +1291,22 @@ td.mono, th.mono { font-family: "SF Mono", Consolas, monospace; font-size: calc(
 .cs-logo svg { display: block; width: 18px; height: 18px; }
 .cs-text { flex: none; }
 .cs-speed { flex: none; font-variant-numeric: tabular-nums; }
+
+/* ★ 工作区占用/排队提示条。
+   放在状态行下面、附件区上面：这条信息属于「这次能不能写」的前置条件，
+   必须比正文更靠前看到 —— 底部状态栏太远，容易被当成普通读数忽略。
+   pointer-events 保留可点（用户可以点「停止」退出排队）。 */
+.ws-lock {
+  display: flex; align-items: center; gap: 8px;
+  margin: 7px 14px 0; padding: 6px 10px;
+  border: 1px solid var(--border-strong); border-radius: 8px;
+  background: var(--bg-hover);
+  font-size: calc(11.5px * var(--ui-scale)); color: var(--text-soft);
+}
+.ws-lock[hidden] { display: none; }
+.ws-lock .wl-ic { flex: none; display: inline-flex; opacity: .8; }
+.ws-lock .wl-txt { flex: 1 1 auto; min-width: 0; }
+.ws-lock .wl-txt b { color: var(--text); font-weight: 600; }
 /* 运行时：一笔一划写出、再一笔一划擦掉。
    用 stroke-dasharray/dashoffset 逐笔画出，各笔错开 delay 形成「书写」节奏。 */
 .cs-logo.busy svg path, .cs-logo.busy svg circle {

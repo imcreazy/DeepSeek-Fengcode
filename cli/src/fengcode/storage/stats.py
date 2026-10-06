@@ -68,11 +68,17 @@ class StatsStore:
             f" COALESCE(SUM(output_tokens),0) AS ot, COALESCE(SUM(cached_tokens),0) AS ct,"
             f" COALESCE(SUM(cache_miss_tokens),0) AS cm,"
             f" COALESCE(SUM(reasoning_tokens),0) AS rt, COALESCE(SUM(cost),0) AS cost,"
-            f" COALESCE(SUM(duration),0) AS dur FROM usage_log {where}",
+            # ★ 墙钟跨度（最后一次调用 - 第一次调用）由 SQL 直接算：
+            #   `duration` 是各次调用的**耗时之和**，不含两次之间的等待与工具执行时间；
+            #   用户问「这个对话跑了多久」要的是真实经历的时间，不是模型忙的净时长。
+            f" COALESCE(SUM(duration),0) AS dur,"
+            f" MIN(ts) AS first_ts, MAX(ts) AS last_ts FROM usage_log {where}",
             params,
         )
         d = dict(row) if row else {}
         calls = int(d.get("calls") or 0)
+        first_ts = float(d.get("first_ts") or 0)
+        last_ts = float(d.get("last_ts") or 0)
         return {
             "calls": calls,
             "prompt_tokens": int(d.get("pt") or 0),
@@ -82,17 +88,32 @@ class StatsStore:
             "reasoning_tokens": int(d.get("rt") or 0),
             "total_tokens": int(d.get("pt") or 0) + int(d.get("ot") or 0),
             "cost": round(float(d.get("cost") or 0), 6),
+            # 模型净耗时（各次调用耗时之和）
             "duration": round(float(d.get("dur") or 0), 3),
+            # ★ 会话墙钟跨度：从第一次调用到最后一次，中间等你输入、工具执行都算在内。
+            #   只有一次调用时为 0（没有跨度可言），前端据此显示「—」而不是 0s。
+            "span": round(max(0.0, last_ts - first_ts), 3) if (first_ts and last_ts) else 0.0,
+            "first_ts": first_ts,
+            "last_ts": last_ts,
         }
 
     def by_model(self, *, since: float | None = None, limit: int = 50,
                  session_id: str | None = None) -> list[dict[str, Any]]:
+        # ★★ 过滤「真·零用量」条目：调用失败（上游 400、连接被掐断）也会写一条
+        #   usage_log，prompt/output 全是 0 —— 按 provider+model 分组照旧会生成一行，
+        #   界面上就成了「一个我从没用过的模型，占 0%」（实测反馈：明明没用过 glm，
+        #   用量分析里却有一行）。0 token 且 0 费用不携带任何信息，直接不列。
+        #   与前端 renderUsageBreakdown 的过滤同一口径，两端必须一起改。
         where, params = self._where(since, session_id)
         rows = self.db.query(
             f"SELECT provider, model, COUNT(*) AS calls, COALESCE(SUM(prompt_tokens),0) AS pt,"
             f" COALESCE(SUM(output_tokens),0) AS ot, COALESCE(SUM(cost),0) AS cost,"
             f" COALESCE(SUM(duration),0) AS dur, MAX(currency) AS currency"
-            f" FROM usage_log {where} GROUP BY provider, model ORDER BY cost DESC, calls DESC LIMIT ?",
+            f" FROM usage_log {where}"
+            f" GROUP BY provider, model"
+            f" HAVING COALESCE(SUM(prompt_tokens),0) + COALESCE(SUM(output_tokens),0) > 0"
+            f"     OR COALESCE(SUM(cost),0) > 0"
+            f" ORDER BY cost DESC, calls DESC LIMIT ?",
             params + [limit],
         )
         return [
@@ -307,7 +328,6 @@ class StatsStore:
             "by_model": self.by_model(since=month_ago, limit=20),
             "by_day": self.by_day(days=14),
             "by_hour": self.by_hour(hours=24),
-            "tools": self.tool_stats(since=month_ago, limit=12),
             # ★ 用量统计面板：来源分布 / 热力图 / 趋势对比
             "by_kind": self.by_kind(since=month_ago),
             "heatmap": self.heatmap(days=35),
@@ -323,8 +343,10 @@ class StatsStore:
     def tool_stats(self, *, since: float | None = None, limit: int = 12) -> list[dict[str, Any]]:
         """按工具名统计调用次数与成功率（取自审计日志的 tool 类记录）。
 
-        审计表里工具调用记成 action='tool'，target 是工具名，ok 表示是否成功。
-        表可能不存在（老库），一律容错返回空列表。
+        ★ 侧栏原来有个「工具调用」面板消费它，但那个面板**从来没有数据**
+          （审计表里压根没有 action='tool' 的记录），该面板已移除 —— 因此
+          overview() 不再聚合这个统计（每次开面板白跑一次审计表查询）。
+          方法本身保留：查询逻辑正确、自带容错，外部脚本仍可直接调用。
         """
         try:
             conds, params = self._conds(since)

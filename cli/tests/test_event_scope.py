@@ -96,6 +96,13 @@ def test_usage_event_actually_runs_in_strict_mode():
     stub = '''
 "use strict";
 const S = { turnUsage: {}, sessionId: "s1", contextLimit: 0, compactPct: 0.8, streaming: false };
+// ★ 运行状态按会话隔离后，handleEvent 会用这几个**模块级**助手判定归属。
+//   它们不是 send() 的局部变量（本用例要防的正是那种引用），所以沙箱照常提供，
+//   与下面的 usageSnapshotHasData / fmtNum 同类。
+let __box = "s1";
+function activeSid() { return __box; }
+function isCurrentSid(sid) { return (sid || "") === "s1"; }
+function withBox(sid, fn) { const p = __box; __box = sid || ""; try { return fn(); } finally { __box = p; } }
 function usageSnapshotHasData(s) {
   if (!s || typeof s !== "object") return false;
   return (Number(s.prompt_tokens || 0) > 0 || Number(s.completion_tokens || 0) > 0

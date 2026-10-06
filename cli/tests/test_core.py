@@ -459,6 +459,44 @@ class TestMemory:
 
         asyncio.run(go())
 
+    def test_context_block_respects_configured_body_limit(self):
+        """注入模型的每条记忆字数必须可配，且放宽后长经验的尾部真的进得去。
+
+        回归现场：记忆看起来总像没写完。旧实现把每条记忆写死
+        截断到 400 字 —— 一条含路径与命令的经验常被切成半条，模型照着半截去用。
+        本用例同时锁住两端：
+          · 默认（1200 字）下，900 字的记忆应完整进入提示词；
+          · 显式调小到 200 字时，尾部内容确实被截掉（说明这个开关真的起作用）。
+        """
+        import asyncio
+
+        from fengcode.config.schema import MemoryConfig
+        from fengcode.memory.manager import MemoryManager
+        from fengcode.storage.db import Database
+
+        # 尾部放一个独特关键词：它出现在 400 字之后，是旧实现必然丢掉的部分
+        filler = "这是一段用于撑长度的说明文字。" * 40   # 约 600 字
+        content = "开头要点：先看配置。\n" + filler + "\n尾部要点：关键词针尾标记XYZ。"
+        assert len(content) > 500, len(content)
+
+        async def go():
+            db = Database(Path(_TMP) / "mem-limit-test.db")
+            cfg = MemoryConfig()
+            m = MemoryManager(cfg, db=db)
+            await m.remember(content, title="长经验", kind="decision")
+            block = await m.context_block("关键词针尾标记XYZ", top_k=3)
+            assert "长经验" in block, block
+            assert "针尾标记XYZ" in block, (
+                "默认上限下长记忆的尾部应完整进入提示词（旧实现 400 字就截断了）")
+            # 调小上限：同一个标记必须被截掉，证明配置真的生效
+            cfg.recall_body_chars = 200
+            small = await m.context_block("关键词针尾标记XYZ", top_k=3)
+            assert "长经验" in small, small
+            assert "针尾标记XYZ" not in small, "把上限调到 200 字后尾部应被截断"
+            db.close()
+
+        asyncio.run(go())
+
 
 # ==========================================================================
 # 工作流
@@ -737,6 +775,92 @@ class TestStorage:
         kv = KVStore()
         kv.set("k1", {"a": [1, 2]})
         assert kv.get("k1")["a"] == [1, 2]
+
+    def test_summary_span_is_wall_clock_not_duration_sum(self):
+        """会话「运行时间」必须是墙钟跨度，不能是各次调用耗时之和。
+
+        回归现场：实际只跑了 15 分钟的会话，侧栏显示 16h51m。
+        根因两层：
+          · 落库时 `duration` 记的是「回合开始到现在」而不是单次调用耗时，
+            一轮工具循环调用几十次 → 累加成二次增长；
+          · 界面拿这个累加值当「运行时间」显示。
+        修法：落库记单次调用耗时；界面改用 span（最后一次 − 第一次调用）。
+        本用例锁死 span 的口径与 duration 的区别。
+        """
+        import time
+
+        from fengcode.llm.types import Usage
+        from fengcode.storage.stats import StatsStore
+
+        st = StatsStore()
+        sid = "span-" + str(int(time.time() * 1000))
+        now = time.time()
+        # 三次调用：间隔 300 秒，各自耗时 10 秒
+        for i in range(3):
+            st.record(
+                provider="p", model="m",
+                usage=Usage(prompt_tokens=10, completion_tokens=1),
+                duration=10.0, session_id=sid,
+                kind="chat",
+            )
+            # 直接把 ts 摆到想要的位置（record 内部取的是 time.time()）
+            st.db.execute(
+                "UPDATE usage_log SET ts=? WHERE session_id=? AND ts=(SELECT MAX(ts) FROM usage_log WHERE session_id=?)",
+                (now + i * 300, sid, sid),
+            )
+        s = st.summary(session_id=sid)
+        assert s["calls"] == 3
+        # 模型净耗时 = 3 × 10 秒
+        assert abs(s["duration"] - 30.0) < 0.01, s["duration"]
+        # 墙钟跨度 = 从第一次到最后一次调用 = 600 秒（不是 30 秒）
+        assert abs(s["span"] - 600.0) < 0.01, s
+        assert s["span"] > s["duration"], "跨度应大于净耗时之和（中间有等待/工具时间）"
+
+    def test_span_is_zero_for_single_call(self):
+        """只有一次调用时没有「跨度」可言 → 0（前端据此显示「—」）。"""
+        import time
+
+        from fengcode.llm.types import Usage
+        from fengcode.storage.stats import StatsStore
+
+        st = StatsStore()
+        sid = "span1-" + str(int(time.time() * 1000))
+        st.record(provider="p", model="m", usage=Usage(prompt_tokens=5), duration=1.5,
+                  session_id=sid, kind="chat")
+        s = st.summary(session_id=sid)
+        assert s["calls"] == 1
+        assert s["span"] == 0.0
+
+    def test_by_model_drops_zero_usage_models(self):
+        """用量分析不得列出「零用量」的模型。
+
+        回归现场：一个并未使用过的模型也出现在用量分析里。实测该模型其实被
+        调用过 4 次、有真实 token，真正的问题是 0.2% 被显示成 0%（见前端那条
+        用例）；但**真·零用量**的行同样会出现 —— 调用失败（上游 400、断流）
+        也会写一条 usage_log，token 全 0，按 provider+model 分组照旧生成一行，
+        界面上就是个「从没用过的模型，占 0%」。这里锁死后端不再列这种行。
+        """
+        import time
+
+        from fengcode.llm.types import Usage
+        from fengcode.storage.stats import StatsStore
+
+        st = StatsStore()
+        sid = "zm-" + str(int(time.time() * 1000))
+        # 一次成功调用（有 token） + 一次失败调用（token 全 0）
+        st.record(provider="p", model="good", usage=Usage(prompt_tokens=100, completion_tokens=10),
+                  session_id=sid, kind="chat")
+        st.record(provider="p", model="failed", usage=Usage(), session_id=sid,
+                  kind="chat", error="[HTTP 400] bad_response_status_code")
+        rows = st.by_model(session_id=sid)
+        models = {r["model"] for r in rows}
+        assert "good" in models, rows
+        assert "failed" not in models, f"零用量模型不该出现在用量分析里：{rows}"
+        # 有费用没 token 的（罕见但合法）应保留
+        st.record(provider="p", model="costonly", usage=Usage(), cost=0.5,
+                  session_id=sid, kind="chat")
+        models2 = {r["model"] for r in st.by_model(session_id=sid)}
+        assert "costonly" in models2, "有费用无 token 的条目应保留（不能只看 token）"
 
 
 # ==========================================================================
@@ -1180,6 +1304,154 @@ class TestLLMTypes:
         assert st.session_busy("s9") == "turn-x"
         st.drop_agent("s9")
         assert st.session_busy("s9") == ""
+
+    async def test_workspace_lease_hands_over_in_fifo_order(self):
+        """工作区写租约：被占用时排队，前一个完成后**按先来后到**接力。
+
+        回归现场：同一工作区里两个对话同时开跑，两边各写各的那一份，
+        后发的那轮把前一轮写的文件当半成品再改一遍，谁也不收敛。
+        用户要的是「等我那个跑完接着做」，所以这里是等待而不是报错。
+        """
+        import asyncio
+
+        from fengcode.server.app import AppState
+
+        st = AppState()
+        key = "d:/proj/x"
+        assert await st.acquire_workspace(key, session_id="sA", holder="turn-a") is True
+
+        order: list[tuple[str, bool]] = []
+
+        async def waiter(sid: str, holder: str) -> None:
+            order.append((sid, await st.acquire_workspace(key, session_id=sid, holder=holder)))
+
+        tb = asyncio.create_task(waiter("sB", "turn-b"))
+        tc = asyncio.create_task(waiter("sC", "turn-c"))
+        await asyncio.sleep(0.05)          # 让两个等待者入队
+        assert st.workspace_queue_state("sB")["position"] == 1
+        assert st.workspace_queue_state("sC")["position"] == 2
+        assert st.workspace_queue_state("sB")["busy_by"] == "sA"
+        assert st.workspace_queue_state("sB")["busy_by_label"]      # 给界面看的是人话
+
+        st.release_workspace(key, "turn-a")
+        await tb
+        assert order == [("sB", True)], "释放后应转交给队首，而不是让大家抢"
+        assert st.workspace_busy(key) == "sB"
+
+        st.release_workspace(key, "turn-b")
+        await tc
+        assert order == [("sB", True), ("sC", True)]
+        st.release_workspace(key, "turn-c")
+        assert st.workspace_busy(key) == ""
+
+    async def test_workspace_lease_is_idempotent_for_holder(self):
+        """同一持有者重复获取要直接成功（重连 / 重试不该把自己挡在门外）。"""
+        from fengcode.server.app import AppState
+
+        st = AppState()
+        assert await st.acquire_workspace("k", session_id="s1", holder="t1")
+        assert await st.acquire_workspace("k", session_id="s1", holder="t1")
+
+    async def test_cancel_workspace_waiter(self):
+        """排队中的人点停止：要能撤出队列，且不误伤正在写的那位。"""
+        import asyncio
+
+        from fengcode.server.app import AppState
+
+        st = AppState()
+        key = "d:/proj/y"
+        assert await st.acquire_workspace(key, session_id="sA", holder="turn-a")
+        got: list[bool] = []
+
+        async def waiter() -> None:
+            got.append(await st.acquire_workspace(key, session_id="sB", holder="turn-b"))
+
+        t = asyncio.create_task(waiter())
+        await asyncio.sleep(0.05)
+        assert st.workspace_queue_state("sB")["waiting"]
+        assert st.cancel_workspace_waiter("sB") is True
+        await t
+        assert got == [False], "被取消的等待者要知道自己没排上，不能当成功"
+        assert not st.workspace_queue_state("sB")["waiting"]
+        # 正在写的会话不受影响
+        assert st.workspace_busy(key) == "sA"
+        st.release_workspace(key, "turn-a")
+        assert st.workspace_busy(key) == ""
+
+    async def test_drop_agent_releases_workspace_lease(self):
+        """关会话要还工作区锁，否则那个工作区会被永久判为「有人在写」。"""
+        from fengcode.server.app import AppState
+
+        st = AppState()
+        key = "d:/proj/z"
+        assert await st.acquire_workspace(key, session_id="sZ", holder="turn-z")
+        st.drop_agent("sZ")
+        assert st.workspace_busy(key) == ""
+
+    def test_workspace_key_normalizes_path(self):
+        """同一目录的不同写法（大小写 / 斜杠 / 结尾分隔符）必须算同一个工作区。"""
+        from fengcode.server.app import AppState
+
+        st = AppState()
+        a = st._norm_ws("D:/Fengcode/proj/")
+        b = st._norm_ws("d:\\fengcode\\proj")
+        assert a == b
+
+    async def test_workspace_lock_state_endpoint(self):
+        """界面切回会话时要能**拉**到占用/排队状态。
+
+        回归现场：排队状态只靠事件推。用户切到别的对话再切回来时，那一波事件
+        早就发过了 —— 界面会一直停在「排队中」，直到服务端下一次状态变化。
+        """
+        import asyncio
+        import json
+
+        from fengcode.server.app import STATE, api_workspace_lock
+
+        class _Q:
+            def __init__(self, **kw):
+                self._kw = kw
+
+            def get(self, k, d=None):
+                return self._kw.get(k, d)
+
+        class _H:
+            def get(self, k, d=None):
+                return d
+
+        class _Req:
+            def __init__(self, **kw):
+                self.query_params = _Q(**kw)
+                self.headers = _H()
+
+        async def state_of(sid: str) -> dict:
+            res = await api_workspace_lock(_Req(session_id=sid))
+            return json.loads(res.body.decode("utf-8"))["state"]
+
+        key = STATE.workspace_key("sA")
+        assert await STATE.acquire_workspace(key, session_id="sA", holder="turn-a")
+        STATE.acquire_session("sA", "turn-a")
+
+        async def wait_b() -> None:
+            await STATE.acquire_workspace(key, session_id="sB", holder="turn-b")
+
+        tb = asyncio.create_task(wait_b())
+        await asyncio.sleep(0.05)
+        try:
+            b = await state_of("sB")
+            assert b["waiting"] is True and b["position"] == 1
+            assert b["busy_by"] == "sA" and b["busy_by_label"]
+            # 排队中还没开工：界面据此知道「先别接流」
+            assert b["running"] is False
+            a = await state_of("sA")
+            assert a["held_by_me"] is True and a["waiting"] is False
+            # 持有者自己在跑：界面据此知道「切回来要接回这条流」
+            assert a["running"] is True
+        finally:
+            STATE.release_workspace(key, "turn-a")
+            await tb
+            STATE.release_workspace(key, "turn-b")
+            STATE.release_session("sA", "turn-a")
 
     def test_turn_result_content_streamed_flag(self):
         """流式已交付标记要能传出（前端据此避免重复渲染）。"""

@@ -24,6 +24,10 @@ test('stream context retains reasoning box between events', () => {
   const context = vm.runInNewContext(`(() => {
     let assistEl, pendingEl, reasoningEl, reasoningText = '', streamBuf = '';
     const paintStream = () => {}, toolTimes = {}, t0 = 0;
+    // ★ 沙箱要提供对象字面量引用到的**全部**外部标识符，否则崩在无关的地方：
+    //   · sid —— send() 里冻结的会话 id（运行状态按会话隔离，归属由它决定）；
+    //   · flushStream —— 同步落盘句柄（见「有输出但不显示」那条历史坑）。
+    const sid = 's-test', flushStream = () => {};
     ${source.slice(start, end)}
     return streamContext;
   })()`);

@@ -584,7 +584,94 @@ const S = {
   _queueLoaded: false,
 };
 
-/* 设置中心的当前分类 */
+/* ==========================================================================
+   会话级运行状态：每个对话各存一份
+   ---------------------------------------------------------------------
+   ★ 为什么必须按会话分桶：旧实现把 streaming / 运行时长 / 速率 / 中止句柄 /
+     排队队列 / 本轮用量**全放在一个全局对象上**，切会话时一个都不重置。
+     典型症状：
+       · 在 A 里跑任务时切到新对话 B，B 的输入卡片上仍写着 A 的
+         「字斟句酌中… 113.5 t/s」；
+       · 在 B 里发消息却提示「立即发送 / 取回」—— 因为 S.streaming 还是 A 的 true，
+         于是被当成「正在跑，你这条先排队」。
+   ★ 改法：这些字段按会话 id 分桶；S 上的同名属性变成**转发到当前上下文会话**
+     的访问器。上下文由 CUR.box 指定 —— 流式回合在整个生命周期里都待在
+     **它自己的**会话上下文里（即使界面已经切走），所以不会把 A 的读数写到 B 上。
+   ========================================================================== */
+const CUR = { box: "" };          // 当前操作归属的会话 id（空 = 跟随当前显示的会话）
+function activeSid() { return CUR.box || S.sessionId || ""; }
+
+/** 一份会话级运行状态的默认值。 */
+function sessDefaults() {
+  return {
+    streaming: false,          // 这个会话是否正在跑一个回合
+    abort: null,               // 该回合的中止句柄（点「停止」立刻断开这条流）
+    // ★ 用户消息序号按会话各自计数：它是消息锚点的 id（msg-1/msg-2…），
+    //   而每个会话现在各有自己的消息容器 —— 共用一个全局计数会让两个容器里
+    //   出现同样的 id（对话导航的 goto 会跳到别的会话那条消息上）。
+    msgSeq: 0,
+    turnStarted: 0,
+    turnElapsed: 0,            // 本回合已运行秒数
+    turnSpeed: 0,              // 本回合输出速率（t/s）
+    streamOutEst: 0,           // 本回合已产出内容的估算 token（按流式字数换算）
+    speedQ: [],                // 计速滑动窗口样本
+    lastEventAt: 0,            // 看门狗基准：最近一次收到后端事件的时刻
+    _cancelled: false,         // 用户主动停止过这个回合
+    _cancelledTurn: false,     // 本回合被停过（收尾补发据此拒绝补写）
+    _phase: "idle",            // idle / busy / done（状态行文案）
+    turnUsage: null,           // 该会话的用量读数（右侧面板 + 状态栏）
+    cacheDiag: null,           // 缓存前缀归因（命中率掉的解释）
+    queue: [],                 // 该会话的待发队列
+    _queueLoaded: false,
+    pendingApprovals: {},      // 该会话待确认的审批卡（切会话重建消息流后要放回）
+  };
+}
+const SESS = new Map();
+function sessState(sid) {
+  const key = sid || "";
+  let o = SESS.get(key);
+  if (!o) { o = sessDefaults(); SESS.set(key, o); }
+  return o;
+}
+// 把上面这些字段挂成 S 的访问器：读 / 写都落到「当前上下文会话」那一份上。
+// 这样全站已有的 S.streaming / S.turnUsage / S.queue 写法一行都不用改，
+// 但语义从「全局一份」变成「每个对话各一份」。
+Object.keys(sessDefaults()).forEach((k) => {
+  Object.defineProperty(S, k, {
+    configurable: true,
+    get() { return sessState(activeSid())[k]; },
+    set(v) { sessState(activeSid())[k] = v; },
+  });
+});
+/** 在指定会话的上下文里执行 fn；结束后恢复。
+    流式回合、事件处理都用它，保证读写的是「这条流自己的」会话状态。
+    ★ 回调是 async 时必须等它**落定**再还原：否则 withBox 会在第一个 await 处
+      就恢复上下文，await 之后的代码就跑到别人的会话上去了（收尾段全是 await）。 */
+function withBox(sid, fn) {
+  const prev = CUR.box;
+  CUR.box = sid || "";
+  let out;
+  try {
+    out = fn();
+  } catch (e) {
+    CUR.box = prev;
+    throw e;
+  }
+  if (out && typeof out.then === "function") {
+    return out.then(
+      (v) => { CUR.box = prev; return v; },
+      (e) => { CUR.box = prev; throw e; },
+    );
+  }
+  CUR.box = prev;
+  return out;
+}
+/** 某个会话是不是当前**显示**的那个。全局 UI（状态行、输入区按钮）只该被它刷新。 */
+function isCurrentSid(sid) { return (sid || "") === (S.sessionId || ""); }
+
+/* ==========================================================================
+   设置中心的分类定义
+   ========================================================================== */
 const SS = { current: "general" };
 
 /* ---------------- 主题 ---------------- */
@@ -652,8 +739,11 @@ function syncImageThemeDim() {
     document.body.classList.remove("theme-dimmed");
     return;
   }
+  // ★ 后台会话（切走仍在跑的）不该改这个全局外观：它依据「当前会话有没有内容」
+  //   判断，而此刻前台的对话可能还是空的 —— 会被后台那条流误判成「开始工作了」。
+  if (!isCurrentSid(activeSid())) return;
   const has = (S.messages && S.messages.length > 0)
-    || !!document.querySelector("#messages .msg")
+    || paneQA(".msg").length > 0
     || !!S.streaming;   // 正在生成也算「开始工作」
   document.body.classList.toggle("theme-dimmed", !!has);
 }
@@ -887,6 +977,10 @@ async function renderNav() {
           }
           const input = $("#input");
           if (input) { input.disabled = false; input.readOnly = false; input.focus(); }
+          // ★ 归档的会话不再显示：它没在跑就把消息容器清掉，别让 DOM 与运行状态
+          //   一直堆在内存里（开几十个对话再归档，隐藏容器会越积越多）。
+          //   正在跑的**保留**容器 —— 那条流还在往它里面写，清了就丢内容。
+          if (!sessState(sid).streaming) dropPane(sid);
           toast("已归档，可在回收站恢复");
           renderNav();
         } catch (err) { toast("归档失败：" + err.message, "err"); }
@@ -1711,22 +1805,50 @@ async function renderInfoPanel() {
       <div class="ip-row"><span class="k">累计 tokens</span><span class="v">${fmtNum(sess.total_tokens || 0)}</span></div>
       <div class="ip-row"><span class="k">请求数</span><span class="v">${fmtNum(sess.calls || 0)}</span></div>
       <div class="ip-row"><span class="k">会话费用</span><span class="v">${(sess.cost || 0).toFixed(4)}</span></div>
-      <div class="ip-row"><span class="k">运行时间</span><span class="v">${fmtDuration(sess.duration || 0)}</span></div>
-      <div class="ip-row"><span class="k">平均每轮</span><span class="v">${sess.calls ? fmtDuration((sess.duration || 0) / sess.calls) : "—"}</span></div>
+      <div class="ip-row"><span class="k">运行时间</span><span class="v">${fmtDuration(sess.span != null ? sess.span : sessionSpanLocal(sess))}</span></div>
     </div>
 
     <div class="ip-card">
-      <h4>本轮用量<span class="hint">本回合累计</span></h4>
-      <div class="ip-row"><span class="k">输入</span><span class="v">${fmtNum(u.acc_prompt_tokens || 0)}</span></div>
-      <div class="ip-row"><span class="k">输出</span><span class="v">${fmtNum(u.completion_tokens || 0)}</span></div>
-      <div class="ip-row"><span class="k">推理</span><span class="v">${fmtNum(u.reasoning_tokens || 0)}</span></div>
-      <div class="ip-row"><span class="k">缓存命中</span><span class="v">${fmtNum(u.acc_cached_tokens || 0)}</span></div>
-      <div class="ip-row"><span class="k">费用</span><span class="v">${fmtCost(u.cost || 0, u.currency)}</span></div>
+      <h4>用量<span class="hint">左：${(stats && stats.session) ? "本会话" : "全库累计"} · 右：本回合</span></h4>
+      <div class="ip-cols">
+        <span class="k"></span>
+        <span class="h">${(stats && stats.session) ? "本会话" : "全库累计"}</span>
+        <span class="h">本回合</span>
+
+        <span class="k">输入</span>
+        <span class="v">${fmtNum(sess.prompt_tokens || 0)}</span>
+        <span class="v">${fmtNum(u.acc_prompt_tokens || 0)}</span>
+
+        <span class="k">输出</span>
+        <span class="v">${fmtNum(sess.output_tokens || 0)}</span>
+        <span class="v">${fmtNum(u.completion_tokens || 0)}</span>
+
+        <span class="k">推理</span>
+        <span class="v">${fmtNum(sess.reasoning_tokens || 0)}</span>
+        <span class="v">${fmtNum(u.reasoning_tokens || 0)}</span>
+
+        <span class="k">缓存命中</span>
+        <span class="v">${fmtNum(sess.cached_tokens || 0)}</span>
+        <span class="v">${fmtNum(u.acc_cached_tokens || 0)}</span>
+
+        <span class="k">费用</span>
+        <span class="v">${fmtCost(sess.cost || 0, u.currency)}</span>
+        <span class="v">${fmtCost(u.cost || 0, u.currency)}</span>
+      </div>
     </div>
 
     ${renderUsageBreakdown(stats)}
-    ${renderToolStats(stats)}
   `;
+}
+
+/** 会话的墙钟跨度：最后一次调用 − 第一次调用。
+    ★ 后端 summary() 已经算好 `span`，这里只是**兼容兜底**（旧缓存 / 缺少该字段时
+      用 first_ts、last_ts 现算）。不要退回 `duration`：那是各次调用耗时之和，
+      与实际经历的时间差很远（用户的疑问正是「我只跑了 15 分钟」）。 */
+function sessionSpanLocal(sess) {
+  const a = Number((sess && sess.first_ts) || 0);
+  const b = Number((sess && sess.last_ts) || 0);
+  return (a && b) ? Math.max(0, b - a) : 0;
 }
 
 /** 把秒数格式化成人话（如 1m23s / 12.4s） */
@@ -1739,27 +1861,16 @@ function fmtDuration(sec) {
   return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}m`;
 }
 
-/** 工具调用统计（次数 / 成功率） */
-function renderToolStats(stats) {
-  const tools = (stats && stats.tools) || [];
-  if (!Array.isArray(tools) || !tools.length) {
-    return `<div class="ip-card"><h4>工具调用</h4>
-      <div class="ip-sub">还没有工具调用记录</div></div>`;
-  }
-  const rows = tools.slice(0, 8).map((t) => {
-    const calls = t.calls || 0, ok = t.ok != null ? t.ok : calls;
-    const rate = calls > 0 ? Math.round((ok / calls) * 100) : 0;
-    return `<div class="ip-row"><span class="k">${esc(t.name || t.tool || "未知")}</span>
-      <span class="v">${calls} 次 · ${rate}%</span></div>`;
-  }).join("");
-  return `<div class="ip-card"><h4>工具调用<span class="hint">次数 · 成功率</span></h4>${rows}</div>`;
-}
-
 /** 来源占比 + 明细 */
 function renderUsageBreakdown(stats) {
   if (!stats) return "";
-  const byModel = stats.by_model || stats.models || [];
-  if (!Array.isArray(byModel) || !byModel.length) {
+  const raw = stats.by_model || stats.models || [];
+  // ★★ 过滤「真·零用量」条目：调用失败（上游 400、断流）也会写一条 usage_log，
+  //   它的 prompt/output 全是 0 —— 按 provider+model 分组照旧会生成一行，
+  //   界面上就成了「一个我从没用过的模型，占 0%」。0 占比没有任何信息量。
+  const byModel = (Array.isArray(raw) ? raw : []).filter(
+    (m) => (Number(m.total_tokens) || 0) > 0 || (Number(m.cost) || 0) > 0);
+  if (!byModel.length) {
     return `<div class="ip-card"><h4>用量分析</h4>
       <div class="ip-sub">还没有调用记录</div></div>`;
   }
@@ -1767,13 +1878,22 @@ function renderUsageBreakdown(stats) {
   const palette = ["#4f46e5", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6"];
   let bars = "", legend = "";
   byModel.slice(0, 6).forEach((m, i) => {
-    const p = Math.round(((m.total_tokens || 0) / total) * 100);
-    bars += `<i style="width:${p}%;background:${palette[i % palette.length]}"></i>`;
+    const share = ((m.total_tokens || 0) / total) * 100;
+    // ★★ 占比不足 1% 时不能圆成 0%：那会让「真的调用过几次」看起来像
+    //   「从没用过却莫名占一行」（实测反馈的正是这个观感：glm 调用过 4 次、
+    //   合计约 6 万 token，占比 0.2%，显示成 0% 就成了「我没用过 glm 啊」）。
+    //   如实写「<1%」并把调用次数摆出来，用户一眼能对上账。
+    const pctText = share >= 1 ? `${Math.round(share)}%` : "<1%";
+    // 色条宽度给一个可视下限，否则 0.2% 的条子是一个像素都看不见的空白，
+    // 图例上却有一行 —— 看着像界面错乱。
+    const barW = share >= 1 ? Math.round(share) : 1.2;
+    bars += `<i style="width:${barW}%;background:${palette[i % palette.length]}"></i>`;
     legend += `<div class="ratio-legend" style="margin-top:4px">
       <span class="ratio-dot" style="background:${palette[i % palette.length]}"></span>
       <span>${esc(m.model || m.name || "未知")}</span>
       <span class="spacer" style="flex:1"></span>
-      <span>${p}%</span></div>`;
+      <span title="${fmtNum(m.total_tokens || 0)} tokens">${pctText}</span>
+      <span style="color:var(--text-faint);margin-left:8px">${fmtNum(m.calls || 0)} 次</span></div>`;
   });
   return `<div class="ip-card">
     <h4>用量分析<span class="hint">共 ${byModel.length} 个模型</span></h4>
@@ -1871,10 +1991,13 @@ function paintComposerStatus(speed) {
    现在的规则：只在「确有新内容产出」的时刻记录一个样本（时间 + 已产出 token），
    吞吐 = 窗口内新增产出 / 窗口时间跨度；**没有新内容时读数保持不变**，
    不会随时间往下滑。 */
-function pushSpeedSample(now) {
+function pushSpeedSample(now, st) {
   now = now || Date.now();
-  const out = S.streamOutEst || 0;
-  const q = S.speedQ || (S.speedQ = []);
+  // ★ 允许显式指定会话状态：回合的 ticker 与收尾都跑在自己会话上，
+  //   不能用 S.* 访问器（那时当前会话可能已经切走了）。
+  const T = st || sessState(activeSid());
+  const out = T.streamOutEst || 0;
+  const q = T.speedQ || (T.speedQ = []);
   const last = q.length ? q[q.length - 1].out : 0;
   if (out <= last) return;              // 没有新内容：不产生新读数
   q.push({ t: now, out });
@@ -1883,7 +2006,7 @@ function pushSpeedSample(now) {
   if (q.length >= 2) {
     const dt = (now - q[0].t) / 1000;
     const dout = out - q[0].out;
-    if (dt >= 0.6 && dout > 0) S.turnSpeed = dout / dt;
+    if (dt >= 0.6 && dout > 0) T.turnSpeed = dout / dt;
   }
 }
 
@@ -2069,7 +2192,81 @@ function renderTopActions(page) {
 /* ==========================================================================
    对话页
    ========================================================================== */
-const msgBox = () => $("#messages");
+/* ---- 每个对话一个独立消息容器（pane）----
+   ★ 为什么要分容器：运行中的会话切走后仍在后台产出正文与工具卡，
+     切回来必须原样看到（正是用户要的「同时好几个对话任务」）。
+     旧实现只有**一个** #messages，切会话就先清空再重放历史 ——
+     那条还在跑的流往里写的内容会被抹掉，用户切回来只剩半截甚至空白。
+   ★ 隐藏的 pane 用 `display:none`（见 app.css）：不占空间、不参与滚动，
+     但 DOM 还在，流式写入照常落进去。#messages 仍是唯一的滚动容器。 */
+const PANES = new Map();          // 会话 id → .msg-pane 元素
+
+/** 取（必要时创建）某个会话的消息容器。 */
+function paneOf(sid) {
+  const key = sid || "";
+  let el = PANES.get(key);
+  if (el && el.isConnected) return el;
+  const host = $("#messages");
+  if (!host) return null;
+  el = document.createElement("div");
+  el.className = "msg-pane";
+  el.dataset.sid = key;
+  host.appendChild(el);
+  PANES.set(key, el);
+  // ★ 一个都没有激活时，把新建的这个激活：否则启动流程里「写进 pane 的内容」
+  //   （例如欢迎语）落在隐藏容器里，界面一片空白。
+  if (!host.querySelector(".msg-pane.active")) el.classList.add("active");
+  return el;
+}
+
+/** 消息容器：**当前上下文会话**的那一个。
+    ★ 这是全站唯一入口，`addMessage` / 工具卡 / 审批卡都经它落位 ——
+      上下文由 activeSid() 决定，而流式回合全程待在自己的会话上下文里
+      （见 withBox），所以后台会话的内容不会被写进当前显示的界面。 */
+const msgBox = () => paneOf(activeSid());
+
+/** 切换当前显示的容器（切会话时调用）。 */
+function setPane(sid) {
+  const key = sid || "";
+  const host = $("#messages");
+  if (!host) return;
+  const el = paneOf(key);
+  $$(".msg-pane", host).forEach((p) => p.classList.toggle("active", p === el));
+  if (el) el.classList.add("active");
+  // ★ 收掉启动阶段那个「还没有会话」的占位容器（key 为空）。
+  //   启动时先 emptyState()（那时 S.sessionId 还是空），随后才切到真会话 ——
+  //   不清理的话它会带着欢迎语一直留在 DOM 里，白占一份节点与内存。
+  const ph = PANES.get("");
+  if (ph && key && ph !== el) {
+    try { ph.remove(); } catch (e) {}
+    PANES.delete("");
+    SESS.delete("");
+  }
+}
+
+/* ★★ 会话作用域查询：`#messages` 下现在有**多个** pane（每个对话一个），
+   直接写 `$("#messages .msg-wrap")` 会把隐藏会话的消息一起数进来 ——
+   表现为「对话导航的横杠数量对不上」「去重探测误以为文字已显示」等。
+   凡是「本会话的消息」一律经这两个函数查，与 msgBox() 同口径。 */
+const paneQ = (sel) => { const b = msgBox(); return b ? b.querySelector(sel) : null; };
+const paneQA = (sel) => { const b = msgBox(); return b ? Array.from(b.querySelectorAll(sel)) : []; };
+
+/** 滚动宿主：**永远是 `#messages`**，不是消息 pane。
+    ★ 为什么必须分开：pane 只是消息的容器（`display:none` 时整块不显示），
+      真正滚动的是外层 `#messages`。旧代码里「消息区」只有 #messages 一个概念，
+      所以滚动、跟随、看门狗这些地方原本写 msgBox() 是对的 —— 拆出 pane 之后
+      再用 msgBox() 就会读到 pane（它 scrollHeight == clientHeight，永远不算离开底部），
+      「回到底部」按钮和跟随逻辑会整体失效。 */
+const scrollHost = () => $("#messages");
+
+/** 丢掉某个会话的容器（删除会话时用；不删的话 DOM 会一直留着）。 */
+function dropPane(sid) {
+  const key = sid || "";
+  const el = PANES.get(key);
+  if (el) { try { el.remove(); } catch (e) {} }
+  PANES.delete(key);
+  SESS.delete(key);
+}
 
 function addMessage(role, html, opts) {
   opts = opts || {};
@@ -2091,7 +2288,8 @@ function addMessage(role, html, opts) {
     </div></div>`;
   const c = $(".content", wrap);
   if (opts.raw) c.innerHTML = html; else c.className = "md", c.innerHTML = md(html);
-  msgBox().appendChild(wrap);
+  const box = msgBox();
+  if (box) box.appendChild(wrap);
   // ★ 新气泡渐显（只动透明度，不动位置 —— 动位置会让正文在流式中反复跳动）
   try { animMessage(wrap); } catch (e) {}
   if (role === "user") {
@@ -2099,7 +2297,9 @@ function addMessage(role, html, opts) {
     if (tg) tg.onclick = (e) => { e.preventDefault(); toggleTurn(wrap); };
     refreshMsgNav();
   }
-  scrollDown();
+  // ★ 只有**当前显示**的会话才滚动视图：后台会话（切走后仍在跑的）往自己的
+  //   隐藏容器里追加内容时，不能把用户正在看的这个对话拽走。
+  if (!box || box.classList.contains("active")) scrollDown();
   return c;
 }
 
@@ -2190,7 +2390,7 @@ function toggleTurn(userWrap) {
 
 /** 新会话/切换会话后：按 localStorage 还原折叠状态；有问题的轮次强制展开。 */
 function restoreTurnCollapse() {
-  const users = $$("#messages .msg-wrap[data-user-msg]");
+  const users = paneQA(".msg-wrap[data-user-msg]");
   for (const u of users) {
     const problem = turnHasProblem(u);
     let collapsed = false;
@@ -2206,7 +2406,13 @@ function restoreTurnCollapse() {
 let FOLLOW_TAIL = true;
 
 function scrollDown(force) {
-  const m = msgBox();
+  const m = scrollHost();
+  if (!m) return;
+  // ★★ 后台会话**不能**动视图：它的流还在往自己隐藏的容器里追加内容，
+  //   如果照样把滚动条拉到底，用户正在看的这个对话会被不停拽走
+  //   （表现就是「明明在看 A，视图自己往下跳」）。
+  //   判据：当前操作所属的会话就是显示中的那个（后台会话的事件带着自己的上下文）。
+  if (!isCurrentSid(activeSid())) return;
   if (force) FOLLOW_TAIL = true;
   if (force || FOLLOW_TAIL) m.scrollTop = m.scrollHeight;
   updateJumpBottom();
@@ -2217,7 +2423,7 @@ function scrollDown(force) {
     增长拽回底部 —— 表现就是「滚轮抽搐、怎么滚都滚不上去」（实测）。
     现在：一旦检测到用户主动向上滚/按上方向键，立刻停止跟随；滚回底部才恢复。 */
 function watchUserScroll() {
-  const m = msgBox();
+  const m = scrollHost();
   if (!m || m._watchScrollBound) return;
   m._watchScrollBound = true;
   m.addEventListener("wheel", (e) => {
@@ -2251,12 +2457,12 @@ function watchUserScroll() {
     （实测「滚轮转了却弹回最下面」）。scroll 事件里的距底才是滚动后的真值。
     只有真的贴底才恢复，保持「内容增长不算上滑」这条老约定。 */
 function updateFollowTailByPosition() {
-  const m = msgBox();
+  const m = scrollHost();
   if (!m) return;
   if (m.scrollHeight - m.scrollTop - m.clientHeight < 24) FOLLOW_TAIL = true;
 }
 function updateJumpBottom() {
-  const m = msgBox(), b = $("#jump-bottom");
+  const m = scrollHost(), b = $("#jump-bottom");
   if (!m || !b) return;
   const away = m.scrollHeight - m.scrollTop - m.clientHeight > 180;
   // ★★★ 这里**只单向**「停止跟随」，绝不反向置回 true。
@@ -2275,7 +2481,7 @@ function updateJumpBottom() {
   //   只要任一个已展开的思考块离开了底部，就显示按钮。
   let rcAway = false;
   try {
-    const list = document.querySelectorAll("#messages .reasoning[open] .rc");
+    const list = paneQA(".reasoning[open] .rc");
     for (const rc of list) {
       if (rc.scrollHeight - rc.scrollTop - rc.clientHeight > 20) { rcAway = true; break; }
     }
@@ -2283,12 +2489,12 @@ function updateJumpBottom() {
   b.classList.toggle("show", away || rcAway);
 }
 function jumpToBottom() {
-  const m = msgBox();
+  const m = scrollHost();
   if (m) m.scrollTo({ top: m.scrollHeight, behavior: "smooth" });
   FOLLOW_TAIL = true;
   // ★ 一并把展开的思考块滚到底 —— 否则按钮在思考区里点了没反应（只有外层动了）。
   try {
-    document.querySelectorAll("#messages .reasoning[open] .rc").forEach((rc) => {
+    paneQA(".reasoning[open] .rc").forEach((rc) => {
       rc._followTail = true;
       rc.scrollTop = rc.scrollHeight;
     });
@@ -2296,7 +2502,8 @@ function jumpToBottom() {
   updateJumpBottom();
 }
 function clearMessages() {
-  msgBox().innerHTML = "";
+  const box = msgBox();
+  if (box) box.innerHTML = "";
   S.msgSeq = 0;
   // ★ 重建后把「仍未答复」的确认卡放回来：它们在消息流里，会被上面这行一起抹掉，
   //   而服务端那次工具调用还在阻塞等答复（旧版卡片在浮层里，不受影响；搬进对话流必须自己恢复）。
@@ -2313,7 +2520,7 @@ function clearMessages() {
 function refreshMsgNav() {
   const nav = $("#msg-nav");
   if (!nav) return;
-  const wraps = $$("#messages .msg-wrap[data-user-msg]");
+  const wraps = paneQA(".msg-wrap[data-user-msg]");
   if (!wraps.length) {
     nav.innerHTML = "";
     nav.classList.remove("has-items");
@@ -2348,7 +2555,7 @@ function refreshMsgNav() {
 function syncMsgNavActive() {
   const nav = $("#msg-nav");
   if (!nav || !nav.classList.contains("has-items")) return;
-  const wraps = $$("#messages .msg-wrap[data-user-msg]");
+  const wraps = paneQA(".msg-wrap[data-user-msg]");
   if (!wraps.length) return;
   const box = msgBox();
   const top = box.scrollTop + 60;
@@ -2366,6 +2573,7 @@ async function newSession() {
       body: { title: "新对话", workspace: S.workspace || "" },
     });
     S.sessionId = r.session.session_id || r.session.id;
+    setPane(S.sessionId);          // 新会话有自己的消息容器（空白）
     const defaultPerm = (() => { try { return localStorage.getItem("fengcode_default_permission") || "ask"; } catch (e) { return "ask"; } })();
     CUR_PERM = ["deny", "ask", "allow"].includes(defaultPerm) ? defaultPerm : "ask";
     try { localStorage.setItem("fengcode_perm", CUR_PERM); } catch (e) {}
@@ -2380,6 +2588,8 @@ async function newSession() {
     go("chat");
     renderNav();
     try { refreshTodos(); } catch (e) {}   // 新会话：待办面板应为空
+    renderQueue();                 // ★ 队列也要跟着换：不切就会把上一个会话的排队项画过来
+    syncSessionUI(S.sessionId);
     const chatInput = $("#input");
     if (chatInput) { chatInput.disabled = false; chatInput.focus(); }
   } catch (e) { toast("新建失败：" + e.message, "err"); }
@@ -2391,13 +2601,77 @@ async function openSession(sid) {
   if (sid === S.sessionId && S.page === "chat") return;
   saveDraft(S.sessionId);          // 离开前把当前输入存进它自己的草稿位
   await loadSession(sid);
-  // 待发队列按会话隔离：切过来先清掉上一会话的，再读本会话的（别串队）
-  S.queue = [];
+  // ★ 队列按会话各自存（见 SESS）：这里只把**本会话**的队读回来的那份画出来，
+  //   不再清空 —— 清空会把后台会话排好的队抹掉。
   try { await loadQueue(); } catch (e) {}
   restoreDraft(sid);               // 切回来时恢复该会话没发出去的草稿
   go("chat");
   renderNav();
+  renderQueue();
   try { refreshTodos(); } catch (e) {}   // 切会话：待办面板跟着换（别串上一会话的清单）
+  syncSessionUI(sid);
+  try { refreshWsLock(sid); } catch (e) {}   // 这个会话在排队 / 被占用？拉一次
+}
+
+/** 按**指定会话**的状态刷新全局界面（输入区按钮、状态行、图片主题）。
+    ★ 为什么需要它：这些控件只有一份，而状态是每个会话各一份。切回一个正在
+      后台跑的会话时，必须把「停止」按钮、状态词、速率换成**它的**读数 ——
+      旧实现不做这件事，于是切回来看到的还是上一个会话的状态。
+    ★ 反过来，后台会话在跑时**不能**去改这些控件（它不该替眼前的会话表态），
+      所以调用点要么在切换时（此刻它就是当前会话），要么带 uiLive 判断。 */
+function syncSessionUI(sid) {
+  const cur = sessState(sid || "");
+  const live = isCurrentSid(sid);
+  if (live) {
+    const running = !!cur.streaming;
+    $("#send-btn").disabled = running;
+    $("#stop-btn").style.display = running ? "" : "none";
+    setStatus(running ? "busy" : "ok", running ? "生成中…" : "就绪");
+  }
+  syncImageThemeDim();
+  if (live) { renderStatusBar(); renderInfoPanel(); }
+}
+
+/* ---- 工作区占用 / 排队提示 ----
+   后端对同一**目录**同时只让一个对话在写，其余的排队接力（见 app.py 的
+   acquire_workspace）。界面必须把这件事说出来：否则用户只看到「发了没反应」，
+   会以为坏了 —— 实测反馈里「新对话发消息却显示立即发送/取回」正是这种困惑。 */
+function renderWsLock(st) {
+  const box = $("#ws-lock");
+  if (!box) return;
+  const waiting = !!(st && st.waiting);
+  // 自己在写、或没有任何占用：不提示（正常状态不需要一行字）
+  const busyOther = !!(st && st.busy_by && !st.held_by_me);
+  if (!waiting && !busyOther) { box.hidden = true; box.innerHTML = ""; return; }
+  const who = esc((st && st.busy_by_label) || "另一个对话");
+  const txt = waiting
+    ? `本工作区正由 <b>${who}</b> 使用，已排在第 <b>${Number(st.position) || 1}</b> 位，轮到它会自动开始。`
+    : `<b>${who}</b> 正在使用本工作区，消息会排队等它跑完再开始。`;
+  box.innerHTML = `<span class="wl-ic">${icon("lock", 13)}</span>
+    <span class="wl-txt">${txt}</span>
+    <span class="blank"></span>
+    <button class="btn ghost sm" data-wl-stop type="button">不等了</button>`;
+  box.hidden = false;
+  const b = $("[data-wl-stop]", box);
+  if (b) b.onclick = async () => {
+    try { await api("/api/chat/stop", { method: "POST", body: { session_id: S.sessionId } }); }
+    catch (e) {}
+    renderWsLock(null);
+    try { refreshWsLock(S.sessionId); } catch (e) {}
+  };
+}
+
+/** 拉一次某会话的工作区占用状态并刷新提示。
+    ★ 为什么要「拉」：占用状态是事件推的，而事件只在**变化**时发 ——
+      切回一个排队中的会话时，那一波事件早就发过了。 */
+async function refreshWsLock(sid) {
+  const key = sid || S.sessionId || "";
+  if (!isCurrentSid(key)) return;          // 后台会话的状态不画到眼前
+  try {
+    const r = await api("/api/workspace-lock?session_id=" + encodeURIComponent(key));
+    if (!isCurrentSid(key)) return;        // await 期间用户可能又切走了
+    renderWsLock(r && r.state);
+  } catch (e) { /* 拉不到就不显示，不要因此挡住对话 */ }
 }
 
 /* ---------------- 输入草稿：每个会话各留一份 ----------------
@@ -2528,6 +2802,7 @@ function openFirstRunWizard() {
 
 function emptyState() {
   const b = msgBox();
+  if (!b) return;
   b.innerHTML = `<div class="empty welcome-empty" style="max-width:700px;margin:72px auto">
     <div class="big">${icon("sparkle", 36)}</div>
     <div style="font-size:26px;font-weight:650;color:var(--text);margin-bottom:14px">有什么可以帮你？</div>
@@ -2542,6 +2817,9 @@ async function loadSession(sid) {
   try {
     const d = await api("/api/sessions/" + encodeURIComponent(sid));
     S.sessionId = sid;
+    // ★ 切到目标会话的消息容器。**必须在后续渲染之前** —— 下面所有
+    //   addMessage/renderStored 都写进 msgBox()（= 当前会话的容器）。
+    setPane(sid);
     if (d.session && d.session.model) S.model = d.session.model;
     if (d.session && d.session.workspace) S.workspace = d.session.workspace;
     // ★ 上下文占用必须跟着会话走（实测「切新对话还显示旧对话的几十 K、
@@ -2550,12 +2828,26 @@ async function loadSession(sid) {
     //   于是新会话沿用上一个会话的占用、切回来也不会恢复本会话的占用。
     //   这里按该会话记录的用量恢复占用（后端按会话独立存 input_tokens）。
     applySessionUsage(d.session);
-    clearMessages();
-    if (!d.messages.length) emptyState();
-    for (const m of d.messages) renderStored(m);
+    // ★★★ 切回一个**正在跑**的会话：绝不能清空重放历史。
+    //   这条流在后台一直在往这个容器里写正文/工具卡（那正是「切回来能接上」），
+    //   清空重建会把已经实时画出来的内容抹掉，只剩库里的历史（半截、还没收尾）。
+    //   直接复用现有容器即可 —— 它上面已经有实时内容了。
+    const live = sessState(sid);
+    const box = paneOf(sid);
+    const hasLive = live.streaming && box && box.querySelector(".msg-wrap");
+    if (!hasLive) {
+      clearMessages();
+      if (!d.messages.length) emptyState();
+      for (const m of d.messages) renderStored(m);
+      // ★ 1-D：历史加载完，按 localStorage 还原每轮折叠状态（有问题的轮次强制展开）
+      try { restoreTurnCollapse(); } catch (e) {}
+    } else {
+      // 正在跑的会话：只需把「仍未答复」的确认卡放回来（它们也在流里，没丢）
+      try { restorePendingApprovals(); } catch (e) {}
+      refreshMsgNav();
+    }
     syncModelSelect();
-    // ★ 1-D：历史加载完，按 localStorage 还原每轮折叠状态（有问题的轮次强制展开）
-    try { restoreTurnCollapse(); } catch (e) {}
+    scrollDown(true);   // 切过来贴底看最新输出
   } catch (e) { toast("加载会话失败：" + describeLoadError(e), "err"); }
 }
 
@@ -2563,7 +2855,10 @@ async function loadSession(sid) {
     ★ 为什么要单独一个函数：新建会话、载入会话、换模型三条路径都要刷新它，
       散着写必然漏（实测的「不独立 / 换了没效果 / 重启才对」就是这么来的）。
     后端按会话独立存 input_tokens：有就按它显示，没有就归零。 */
-function applySessionUsage(sess) {
+function applySessionUsage(sess, sid) {
+  // ★ 显式指定会话：这个函数可能在「不是当前显示的会话」的上下文里被调用
+  //   （换模型、切会话的中间态），用 S.turnUsage 访问器会写到别人的读数上。
+  const T = sessState(sid || S.sessionId || "");
   const used = Number((sess && sess.input_tokens) || 0);
   const out = Number((sess && sess.output_tokens) || 0);
   // ★ 上下文占用 / 命中率必须取「最后一次调用」的快照（后端存在 meta.last_usage）：
@@ -2586,7 +2881,7 @@ function applySessionUsage(sess) {
         ? Number(lu.cache_miss_tokens)
         : Math.max(0, ctxPrompt - ctxCached))
     : 0;
-  S.turnUsage = Object.assign({}, S.turnUsage || {}, {
+  T.turnUsage = Object.assign({}, T.turnUsage || {}, {
     // prompt_tokens = 上下文占用读数（取该会话最近一次调用的输入量）
     prompt_tokens: ctxPrompt,
     cached_tokens: ctxCached,
@@ -2597,6 +2892,8 @@ function applySessionUsage(sess) {
     total_tokens: used + out,
     cost: Number((sess && sess.cost) || 0),
   });
+  // ★ 只有这个会话正显示在眼前时才刷全局面板 —— 否则会把它的读数画到别的对话上。
+  if (!isCurrentSid(sid || S.sessionId || "")) return;
   try { renderStatusBar(); } catch (e) {}
   try { renderInfoPanel(); } catch (e) {}
 }
@@ -2749,12 +3046,16 @@ function _ungroupIfFailed(wrap) {
   }
 }
 function updateToolCard(name, data, done) {
-  let node = S.toolNodes.get(name + "|" + (data.index == null ? "" : data.index));
+  // ★ 节点索引必须按会话分桶：两个对话可以同时跑同名工具，
+  //   共用 `name` 作键会让后一个把前一个的卡片认领走（改错卡片、状态乱掉）。
+  const key = (activeSid() || "") + "|" + name + "|" + (data.index == null ? "" : data.index);
+  let node = S.toolNodes.get(key);
   if (!node) {
-    // 找最后一个同名且仍在运行的卡片
-    const all = $$(".tool.run");
+    // 找**本会话**最后一个同名且仍在运行的卡片
+    const all = paneQA(".tool.run");
     for (let i = all.length - 1; i >= 0; i--) {
-      if ($(".tname", all[i]).textContent === name) { node = all[i]; break; }
+      const tn = $(".tname", all[i]);
+      if (tn && tn.textContent === name) { node = all[i]; break; }
     }
   }
   if (!node) return;
@@ -2808,7 +3109,7 @@ function updateToolCard(name, data, done) {
       });
     }
   }
-  S.toolNodes.delete(name);
+  S.toolNodes.delete(key);
 }
 
 /** 回合结束时把「本回合生成的文件」明确列出来（★ 实测：AI 说写好了，
@@ -2933,7 +3234,7 @@ function syncTodoBlockVar() {
   //   （用户看到的是「输出不再自动滚了」）。
   //   所以先记下改之前是否贴底，改完立刻把视图收敛回底部 —— 那次赋值会触发
   //   真实 scroll 事件，`updateFollowTailByPosition()` 再把 FOLLOW_TAIL 置回 true。
-  const m = msgBox();
+  const m = scrollHost();
   const pinned = m ? (m.scrollHeight - m.scrollTop - m.clientHeight < 24) : false;
   host.style.setProperty("--todo-block-h", next);
   if (pinned && m) m.scrollTop = m.scrollHeight;
@@ -3009,58 +3310,83 @@ function renderTodoPanel(tasks, summary, goals) {
   try { syncTodoBlockVar(); } catch (e) {}
 }
 
-/* ---- 发送 ---- */
-async function send() {
-  const input = $("#input");
-  const text = input.value.trim();
-  if (!text && !S.attachments.length) return;
-  // ★ 执行中再发指令 → 进排队，而不是被丢弃。
-  //   旧写法这里直接 `if (S.streaming) return;`，用户敲了回车却什么都没发生。
-  if (S.streaming) {
-    S.queue.push({
-      id: "q" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      text,
-      atts: (S.attachments || []).slice(),
-      created_at: Date.now() / 1000,
-    });
-    S.attachments = [];
-    renderAtts();
+/* ---- 发送 ----
+   ★ `opts.text` / `opts.sid` / `opts.atts` 用于**后台会话的排队接力**：
+     那个会话的回合结束时要把队首发出去，但此刻用户可能正在别的对话里打字 ——
+     既不能读他的输入框（会发错内容），也不能写他的输入框（会覆盖他敲的字）。
+     显式传参即可：文本来自队列项，会话来自发起方。 */
+async function send(opts) {
+  opts = opts || {};
+  const forced = typeof opts.text === "string";
+  const input = forced ? null : $("#input");
+  const sid = opts.sid || S.sessionId || "";
+  const text = (forced ? opts.text : (input ? input.value : "")).trim();
+  const attsIn = forced ? (opts.atts || []).slice() : (S.attachments || []).slice();
+  if (!text && !attsIn.length) return;
+  // ★★★ 整轮对话的状态读写都必须钉在**发起时那个会话**上。
+  //   为什么不能用 S.streaming 这类访问器：这条 async 函数中间有大量 await，
+  //   期间用户完全可能切到别的对话 —— 那时 S.* 会解析到**新**会话的状态，
+  //   于是「停止」停的是别人、计时器读的是别人的读数、收尾写的是别人的队列。
+  //   所以这里一次性取出本会话的状态对象，全函数只用它。
+  const T = sessState(sid);
+  const AT = () => (forced ? attsIn : (S.attachments || []));
+  const clearAtts = () => { S.attachments = []; renderAtts(); };
+  const clearInput = () => {
+    if (!input) return;
     input.value = "";
     input.style.height = "auto";
-    renderQueue();
-    syncQueue();   // ★ 先落盘再发：排队指令不能因为一次刷新就消失
-    toast(`已加入排队（第 ${S.queue.length} 条），本轮结束后自动发送`, "");
+  };
+  // ★ 执行中再发指令 → 进排队，而不是被丢弃。
+  //   旧写法这里直接 `if (S.streaming) return;`，用户敲了回车却什么都没发生。
+  if (T.streaming) {
+    T.queue.push({
+      id: "q" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      text,
+      atts: AT().slice(),
+      created_at: Date.now() / 1000,
+    });
+    if (!forced) { clearAtts(); clearInput(); }
+    if (isCurrentSid(sid)) { renderQueue(); syncQueue(); }
+    toast(`已加入排队（第 ${T.queue.length} 条），本轮结束后自动发送`, "");
     return;
   }
-  input.value = "";
-  input.style.height = "auto";
-  if (S.sessionId) DRAFTS.delete(S.sessionId);   // 已发出，草稿位清掉
-  const welcome = msgBox().querySelector(".welcome-empty");
-  if (welcome) welcome.remove();
-  addMessage("user", esc(text).replace(/\n/g, "<br>") + attHtml(), { raw: true });
-  S.attachments = [];
-  renderAtts();
-  S.streaming = true;
-  S._cancelled = false;   // 新一轮开始：清掉上一轮的「用户已停止」标记
-  S._cancelledTurn = false;  // ★ 同步复位「本轮被停过」标记，否则一次停止会永久禁用补发
-  S._phase = "busy";      // 状态行：运行中
-  $("#send-btn").disabled = true;
-  $("#stop-btn").style.display = "";
-  setStatus("busy", "生成中…");
-  syncImageThemeDim();   // 开始工作：图片主题转为模糊态
+  clearInput();
+  if (!forced) clearAtts();
+  if (sid) DRAFTS.delete(sid);   // 已发出，草稿位清掉
+  // ★ 消息要写进**发起会话**的容器（后台接力时当前显示的是别人）。
+  withBox(sid, () => {
+    const welcome = paneQ(".welcome-empty");
+    if (welcome) welcome.remove();
+    addMessage("user", esc(text).replace(/\n/g, "<br>") + attHtmlFor(forced ? attsIn : null), { raw: true });
+  });
+  T.streaming = true;
+  T._cancelled = false;   // 新一轮开始：清掉上一轮的「用户已停止」标记
+  T._cancelledTurn = false;  // ★ 同步复位「本轮被停过」标记，否则一次停止会永久禁用补发
+  T._phase = "busy";      // 状态行：运行中
+  // ★ 只有当前显示的会话才动全局控件（发送/停止按钮、状态行）——
+  //   后台会话开跑时不该把用户正在看的那个对话的按钮改成「停止」。
+  const uiLive = () => isCurrentSid(sid);
+  const paintTurnUI = () => {
+    if (!uiLive()) return;
+    $("#send-btn").disabled = true;
+    $("#stop-btn").style.display = "";
+    setStatus("busy", "生成中…");
+    syncImageThemeDim();   // 开始工作：图片主题转为模糊态
+  };
+  paintTurnUI();
   const t0 = Date.now();
   let assistEl = null, reasoningEl = null, reasoningText = "";
-  S.turnStarted = t0;
-  S.turnElapsed = 0;
-  S.turnSpeed = 0;
-  S.streamOutEst = 0;   // 本轮已产出内容估算出的 token 数（按流式字符数换算）
-  S.speedQ = [];        // 计速滑动窗口样本：[{t, out}]
-  S.lastEventAt = t0;   // ★ 看门狗基准：必须每轮重置，否则会继承上一轮的时间戳误报「无响应」
+  T.turnStarted = t0;
+  T.turnElapsed = 0;
+  T.turnSpeed = 0;
+  T.streamOutEst = 0;   // 本轮已产出内容估算出的 token 数（按流式字符数换算）
+  T.speedQ = [];        // 计速滑动窗口样本：[{t, out}]
+  T.lastEventAt = t0;   // ★ 看门狗基准：必须每轮重置，否则会继承上一轮的时间戳误报「无响应」
   const turnTicker = setInterval(() => {
-    if (!S.streaming) return;
-    S.turnElapsed = (Date.now() - t0) / 1000;
+    if (!T.streaming) return;
+    T.turnElapsed = (Date.now() - t0) / 1000;
     // 每秒推一次样本；没有新内容时不产生新读数（见 pushSpeedSample）
-    pushSpeedSample();
+    pushSpeedSample(0, T);
     // 思考时长：实时刷新当前思考块的秒数（思考过程 3.2s 451字」里的那个 3.2s）
     try {
       const rb = streamContext.reasoningBox;
@@ -3075,13 +3401,15 @@ async function send() {
     // ★ 看门狗：区分「仍在跑」和「真卡死」，别让界面骗人。
     //   实测过「看起来一直没做完」：上游思考很久、一个事件都不发，
     //   界面却仍写着「生成中」，无法判断到底是在跑还是断了。
-    const silent = (Date.now() - (S.lastEventAt || t0)) / 1000;
-    if (silent > 45 && silent <= 300) {
-      setStatus("busy", `仍在运行…（已 ${Math.round(silent)} 秒没有新输出，可继续等待或点停止）`);
-    } else if (silent > 300) {
-      setStatus("busy", `上游长时间无响应（已 ${Math.round(silent)} 秒）`);
+    const silent = (Date.now() - (T.lastEventAt || t0)) / 1000;
+    if (uiLive()) {
+      if (silent > 45 && silent <= 300) {
+        setStatus("busy", `仍在运行…（已 ${Math.round(silent)} 秒没有新输出，可继续等待或点停止）`);
+      } else if (silent > 300) {
+        setStatus("busy", `上游长时间无响应（已 ${Math.round(silent)} 秒）`);
+      }
+      renderStatusBar();
     }
-    renderStatusBar();
   }, 1000);
   // ★ 流式渲染改为「累积原文 + rAF 节流」：
   //   旧实现每帧 innerText 回读（把 Markdown 源读成渲染后文本再 re-parse），
@@ -3110,7 +3438,9 @@ async function send() {
     });
   };
   // ★ 立即出现「正在回复」占位气泡：用户一发消息就能看到 AI 侧在动，而不是空白等待。
-  let pendingEl = addMessage("assistant", "", { meta: "正在回复…", pending: true });
+  //   ★ 显式进本会话上下文创建：不依赖「此刻恰好没有 await」这个巧合，
+  //     否则一旦后续在中间插入 await，气泡就会落到别的对话里。
+  let pendingEl = withBox(sid, () => addMessage("assistant", "", { meta: "正在回复…", pending: true }));
   const toolTimes = {};
   // 事件共享同一对象，避免结束事件丢失思考框引用。
   const streamContext = {
@@ -3121,7 +3451,9 @@ async function send() {
     //   导致**整个 usage 分支不执行**（实测：读数一直 0、「累计 tokens」也是 0，
     //   但切换会话再切回来就正常 —— 因为那条路走 applySessionUsage，不经 handleEvent）。
     //   挂在这里之后，handleEvent 通过参数 c 就能读到，不再依赖外层作用域。
-    ownerSid: S.sessionId || "",
+    //   ★ 直接写冻结的 sid，不写 S.sessionId：归属就是**发起这一轮时**的会话，
+    //     写成 S.sessionId 会让人以为它随当前会话变化（那正是旧的串台根因）。
+    ownerSid: sid,
     // ★★★ 同步落盘句柄：handleEvent 是模块级函数，只能通过参数 c 访问它。
     //   （1.2.15 的教训：模块级函数直接引用 send 的局部变量会抛 ReferenceError 并被吞掉。）
     flush: flushStream,
@@ -3143,13 +3475,13 @@ async function send() {
   //   必须在发请求时冻结下来，之后**不随 S.sessionId 变化** —— 实测
   //   「老对话跑任务时打开新对话，老对话的输出与实时思考串进新对话」，
   //   根因就是事件处理只看当前 DOM、不看归属。冻结后即可逐条比对丢弃。
-  const streamOwnerSid = S.sessionId || "";
+  const streamOwnerSid = sid;
   let streamDone = false;   // 是否收到完整的 result（用于判断是否需要自动重试）
   // ★ 停止要「立刻」断开连接，不能只发一个 API 请求然后干等。
   //   旧写法点停止只调 /api/chat/stop + toast，前端这条 fetch 仍在读流，
   //   后端也要等这一轮流式结束才收手 —— 表现就是「点了停止没反应」。
   const ac = new AbortController();
-  S.abort = ac;
+  T.abort = ac;
   const runStream = async () => {
     const res = await fetch("/api/chat", {
       method: "POST",
@@ -3157,15 +3489,18 @@ async function send() {
       headers: Object.assign({ "Content-Type": "application/json" }, TOKEN ? { "X-Fengcode-Token": TOKEN } : {}),
       body: JSON.stringify({
         message: text,
-        session_id: S.sessionId,
+        // ★ 用冻结的 sid，不用 S.sessionId：断线自动重试发生在这之后，
+        //   那时用户可能已经切走，重试必须仍然发给**本来的**那个会话。
+        session_id: sid,
         model: S.model || undefined,
         // 工作模式："" = 不指定（由 AI 自主判断）
         mode: CUR_MODE || "",
         stream: true,
         // ★ 附件（含图片真实路径 + 原图 base64）随请求发给后端 → 进 Message.attachments
         //   → openai/anthropic/gemini 客户端转成多模态 content 数组发给模型。
-        //   旧写法这里完全没有 attachments 字段，用户选的文件永远到不了模型。
-        attachments: (S.attachments || []).map((a) => ({
+        //   ★ 用**本轮进入时快照的** attsIn，不再读 S.attachments：它在前面已被清空
+        //     （发完就清是原有行为），而后台接力时读到的更是**别人**会话的附件。
+        attachments: attsIn.map((a) => ({
           kind: a.kind || "file",
           name: a.name,
           path: a.path || "",
@@ -3199,8 +3534,13 @@ async function send() {
         const evSid = ev.session_id || (ev.data && ev.data.session_id) || "";
         if (evSid && streamOwnerSid && evSid !== streamOwnerSid) return;
         if (ev.type === "result") streamDone = true;
-        S.lastEventAt = Date.now();   // 看门狗用：最近一次收到后端事件的时刻
-        handleEvent(ev, streamContext);
+        // ★★ 事件处理全程待在**这条流自己的**会话上下文里：
+        //   切走之后这条流仍在跑，它产出的正文/工具卡/用量必须落进自己的容器与
+        //   自己的会话状态，否则就是把 A 的输出写进 B 的界面（旧的「串台」根因）。
+        withBox(streamOwnerSid, () => {
+          S.lastEventAt = Date.now();   // 看门狗用：最近一次收到后端事件的时刻
+          handleEvent(ev, streamContext);
+        });
       } catch (e) { /* 忽略不完整事件，交给断流收尾 */ }
     };
     while (true) {
@@ -3229,10 +3569,12 @@ async function send() {
       } catch (e) {
         lastErr = e;
         // 用户主动停止 / 已收到完整结果：不再重试
-        if (streamDone || S._cancelled) { lastErr = null; break; }
+        if (streamDone || T._cancelled) { lastErr = null; break; }
         if (attempt === 0) {
-          setStatus("busy", "连接中断，正在自动重试…");
-          addMessage("system", '<span class="tag warn">连接中断</span> 正在自动重试…', { raw: true });
+          if (uiLive()) setStatus("busy", "连接中断，正在自动重试…");
+          withBox(sid, () => {
+            addMessage("system", '<span class="tag warn">连接中断</span> 正在自动重试…', { raw: true });
+          });
           await new Promise((r) => setTimeout(r, 1200));
           assistEl = null;      // 重试会重发完整回答，丢掉半截气泡避免重复渲染
           reasoningEl = null;
@@ -3254,16 +3596,22 @@ async function send() {
         pendingEl.innerHTML = `<span class="tag err">失败</span>`;
       }
     }
-    addMessage("system", `<span class="err-text">出错：${esc(e.message)}</span>`, { raw: true });
+    withBox(sid, () => {
+      addMessage("system", `<span class="err-text">出错：${esc(e.message)}</span>`, { raw: true });
+    });
   } finally {
     clearInterval(turnTicker);
-    S.turnElapsed = (Date.now() - t0) / 1000;
-    pushSpeedSample();   // 回合结束：再推一次样本，让最终读数落定
-    S.streaming = false;
-    S.abort = null;              // 本轮结束，清掉中止句柄
-    $("#send-btn").disabled = false;
-    $("#stop-btn").style.display = "none";
-    setStatus("ok", "就绪");
+    T.turnElapsed = (Date.now() - t0) / 1000;
+    pushSpeedSample(0, T);   // 回合结束：再推一次样本，让最终读数落定
+    T.streaming = false;
+    T.abort = null;              // 本轮结束，清掉中止句柄
+    // ★ 全局控件只在「用户还看着这个会话」时改：后台会话跑完时不该把
+    //   当前对话的发送按钮状态、状态行文案改掉。
+    if (uiLive()) {
+      $("#send-btn").disabled = false;
+      $("#stop-btn").style.display = "none";
+      setStatus("ok", "就绪");
+    }
     // ★★★ 先把缓冲里的正文同步落盘，再判断气泡是不是空的。
     //   否则 rAF 还没执行时 textContent 就是空的，这里会**误删一个其实有内容的气泡**
     //   —— 实测「最终答复也一起没了」的直接原因。
@@ -3278,9 +3626,11 @@ async function send() {
         pendingEl.closest(".msg-wrap").remove();
       }
     }
-    scrollDown(true);
-    refreshFooter();
+    if (uiLive()) { scrollDown(true); refreshFooter(); }
     syncImageThemeDim();   // 回合结束：若已有对话内容则保持模糊态
+    // ★ 收尾必须在**本会话的上下文**里跑：下面会从会话记录补文字、复位气泡、
+    //   读队列 —— 全都要落到发起时那个会话上，不能落到当前显示的那个。
+    await withBox(sid, async () => {
       // ★ 收尾兜底：把最终交付文字从会话记录追回来，并把仍写着「生成中」的气泡复位。
       //   触发条件：**定稿文字确实没渲染到界面上** 才补。
       //   历史坑（实测「发你好输出两次、重启才变一次」）：
@@ -3290,19 +3640,20 @@ async function send() {
       //   于是同一段文字在同一屏出现两次，第二条还挂着「补充（连接中断后从会话记录恢复）」。
       //   现在改成：先看界面上有没有**本轮**的定稿文字，有就绝不补。
       if (!streamContext._finalRendered && streamContext._sawAssistantText !== true) {
-        try { await recoverFinalText(streamContext); } catch (e) {}
+        try { await recoverFinalText(streamContext, sid); } catch (e) {}
       }
-    finalizeTurnBubbles({ gotResult: streamDone, cancelled: S._cancelled });
-    // ★ 明确告诉用户「文件生成在哪」：AI 写的文件默认落在工作区
-    //   （fengcode-data\workspace），不是桌面。旧界面只显示 `~/xxx`，
-    //   容易以为在用户目录，去桌面白找一场。
-    try { renderTurnFiles(streamContext.turnFiles); } catch (e) {}
-    // 状态行显示「已完成」（空闲时仍是「空闲」）
-    S._phase = "done";
-    renderStatusBar();
-    // ★ 本轮结束：队列里还有指令就自动发下一条（排队 / 立即强制发送都走这条路径）。
-    //   延迟一点让本轮的状态与 DOM 收尾落定，避免两轮状态交叉。
-    if ((S.queue || []).length) setTimeout(() => dispatchNextQueued(), 150);
+      finalizeTurnBubbles({ gotResult: streamDone, cancelled: T._cancelled });
+      // ★ 明确告诉用户「文件生成在哪」：AI 写的文件默认落在工作区
+      //   （fengcode-data\workspace），不是桌面。旧界面只显示 `~/xxx`，
+      //   容易以为在用户目录，去桌面白找一场。
+      try { renderTurnFiles(streamContext.turnFiles); } catch (e) {}
+      // 状态行显示「已完成」（空闲时仍是「空闲」）
+      T._phase = "done";
+      if (uiLive()) renderStatusBar();
+      // ★ 本轮结束：队列里还有指令就自动发下一条（排队 / 立即强制发送都走这条路径）。
+      //   延迟一点让本轮的状态与 DOM 收尾落定，避免两轮状态交叉。
+      if ((T.queue || []).length) setTimeout(() => dispatchNextQueued(sid), 150);
+    });
   }
 }
 /* ---- 回合收尾的统一兜底（★ 实测「已完成但左边还写着生成中、且没有收尾文字」）----
@@ -3352,15 +3703,19 @@ function lastAssistNode() {
       ①本轮只要出现过任何正文（c._sawAssistantText）→ 不补；
       ②本轮已补过（c._recovered）→ 不补；
       ③界面上已有这段文字（textAlreadyShown）→ 不补。 */
-async function recoverFinalText(c) {
-  if (!S.sessionId) return false;
+async function recoverFinalText(c, sid) {
+  // ★ 会话 id 必须显式传入：调用点（回合收尾）跑在本会话的 withBox 上下文里，
+  //   而 S.sessionId 是**当前显示**的会话 —— 用它会去读别人的历史，
+  //   补回来的文字就跑到别的对话里去了（实测过这种「答非所问」的补写）。
+  const key = sid || S.sessionId || "";
+  if (!key) return false;
   if (c && (c._recovered || c._sawAssistantText)) return false;
   // ★ 被主动停止的本轮**一律不补**：停止的回合没有「最终交付文字」可言，
   //   后端也不为它落库（core/agent.py 的 `if content:`），硬补只会把
   //   上一轮的旧回答翻出来重贴一遍 —— 实测「发的自行车，却冒出上一句你好」。
   if (S._cancelledTurn) return false;
   try {
-    const d = await api("/api/sessions/" + encodeURIComponent(S.sessionId) + "?limit=40");
+    const d = await api("/api/sessions/" + encodeURIComponent(key) + "?limit=40");
     const msgs = d.messages || [];
     let last = "";
     for (let i = msgs.length - 1; i >= 0; i--) {
@@ -3407,16 +3762,20 @@ function textAlreadyShown(text) {
   return hit / probe.length >= 0.5;
 }
 
+/** 附件气泡的 HTML。`list` 为 null 时取当前会话的待发附件。
+    ★ 为什么要能显式传列表：后台会话的排队接力不读当前会话的附件（那是别人的）。 */
+function attHtmlFor(list) {
+  const items = list || S.attachments || [];
+  if (!items.length) return "";
+  return `<div class="u-atts">${items.map((a) => (a.thumb
+    ? `<span class="u-att u-att-img"><img src="${a.thumb}" alt=""><span class="u-att-n">${esc(a.name)}</span></span>`
+    : `<span class="u-att"><span class="u-att-ic">${icon(a.kind === "image" ? "image" : "file", 12)}</span><span class="u-att-n">${esc(a.name)}</span></span>`
+  )).join("")}</div>`;
+}
 function attHtml() {
   // ★ 发出的用户消息里也要显示附件（旧写法恒返回 ""，发完图气泡里只剩文字，
   //   用户看不出自己到底带没带上）。这里用小缩略图 + 文件名。
-  const list = S.attachments || [];
-  if (!list.length) return "";
-  const items = list.map((a) => (a.thumb
-    ? `<span class="u-att u-att-img"><img src="${a.thumb}" alt=""><span class="u-att-n">${esc(a.name)}</span></span>`
-    : `<span class="u-att"><span class="u-att-ic">${icon(a.kind === "image" ? "image" : "file", 12)}</span><span class="u-att-n">${esc(a.name)}</span></span>`
-  )).join("");
-  return `<div class="u-atts">${items}</div>`;
+  return attHtmlFor(null);
 }
 /* 给当前这段思考「停表」并把标题从「思考中…」改成「思考过程」。
    ★ 什么时候才能停表（实测「思考时间一直是 0 秒」后重新定的规则）：
@@ -3443,13 +3802,17 @@ function markReasoningDone(c) {
 
 function handleEvent(ev, c) {
   const d = ev.data || {};
-  // ★★★ 会话归属统一校验（放在入口，覆盖所有分支）。
-  //   为什么必须在入口做：`processPart` 那道校验比的是「事件与会话**流**是否一致」——
-  //   用户在 A 发任务、切到 B 后，事件里的 sid 与 streamOwnerSid **都还是 A**，
-  //   那道校验照样通过，于是事件被写进**当前界面（B）**。
-  //   实测症状：在 A 发任务，切到 B、C 都看到「正在思考」，内容还一模一样。
-  //   这里比的是「当前会话是否还是这条流的归属」，切走即丢弃，切回来自动恢复。
-  if (c && c.ownerSid && S.sessionId && S.sessionId !== c.ownerSid) return;
+  // ★★★ 归属已由调用方（processPart）用 withBox 划好：事件**一定**写进它自己那个
+  //   会话的容器与状态。旧写法是「当前会话不是这条流的归属 → 丢弃」，
+  //   结果是切走再切回来时，那段输出的内容已经丢了（只有切会话时从库里重放
+  //   才能看到）。现在改为「不丢，只写进自己的容器」—— 这正是「后台继续、切回接上」。
+  const own = (c && c.ownerSid) || activeSid();
+  if (own !== activeSid()) {
+    // ★ 必须 return：否则下面 switch 会在**错误的**上下文里再执行一遍，
+    //   同一个事件落两处（正文重复、用量翻倍）。
+    withBox(own, () => handleEvent(ev, c));
+    return;
+  }
   switch (ev.type) {
     case "text": {
       // ★ 已开始输出正文 → 这段思考结束，计时停表（不然正文都在打字了，
@@ -3622,7 +3985,7 @@ function handleEvent(ev, c) {
       c.reasoningBox = null;
       c.rtext = "";
       const node = renderToolCard({ name: d.name, arguments: d.arguments, running: true });
-      S.toolNodes.set(d.name, node);
+      S.toolNodes.set((activeSid() || "") + "|" + d.name + "|", node);
       break;
     }
     case "tool.end": {
@@ -3638,9 +4001,11 @@ function handleEvent(ev, c) {
       }
       // ★ 写文件类工具执行后刷新右侧文件树：否则删/改完文件，列表还是旧的，
       //   必须手动点「刷新」才更新（实测）。
-      //   只在文件树**当前可见**时刷新，避免白拉接口。
+      //   只在文件树**当前可见**、且改动来自**眼前这个会话**时刷新 ——
+      //   后台会话的文件操作不该去动前台的列表（用户会以为自己的目录变了）。
       try {
-        if (IP_TAB === "files" && $("#infopanel") && $("#infopanel").classList.contains("open")) {
+        if (isCurrentSid(own) && IP_TAB === "files" && $("#infopanel")
+            && $("#infopanel").classList.contains("open")) {
           loadFileTree();
         }
       } catch (e) {}
@@ -3680,19 +4045,17 @@ function handleEvent(ev, c) {
     //   旧版本 SSE 里连这个 case 都没有，清单永远不显示。
     case "task.update":
     case "goal.update": {
-      try { refreshTodos(); } catch (e) {}
+      // ★ 待办面板属于当前显示的会话 —— 后台会话的清单变化不该覆盖眼前的面板。
+      if (isCurrentSid(own)) { try { refreshTodos(); } catch (e) {} }
       break;
     }
     case "usage": {
-      // ★ 会话归属校验（与 processPart 同一道理）：老会话的用量不得覆盖新会话读数。
-      // ★★ 归属值从**参数 c** 上取（c.ownerSid），绝不能引用 send() 的局部变量 ——
-      //    handleEvent 是模块级函数，读外层函数局部变量会抛 ReferenceError 并被静默吞掉，
-      //    整个分支都不执行（这就是「发消息后读数一直 0」的根因）。
-      const ownerSid = (c && c.ownerSid) || "";
-      const evSid = ev.session_id || d.session_id || "";
-      if (evSid && ownerSid && evSid !== ownerSid) break;
-      // 若用户已切走（当前会话 ≠ 本流归属），也不要把读数写进新会话的界面。
-      if (ownerSid && S.sessionId && S.sessionId !== ownerSid) break;
+      // ★★ 归属不用再在这里判：事件进来时已由 withBox 划进**这条流自己的**
+      //    上下文（见 processPart / handleEvent 入口），S.turnUsage 读写的
+      //    就是它自己那份读数。
+      //    ★ 旧写法在这里写「当前会话 ≠ 本流归属 → break」，那会让**切走的**
+      //    会话丢掉后台跑出来的用量（切回来读数就停在切走那一刻）。
+      //    现在改为：照常记下，只有「这个会话正显示在眼前」时才刷全局面板。
       const u = d.usage || {};
       // last_usage = 最后一次上游调用的用量（上下文占用 / 命中率用它）；
       // usage = 本回合累加（费用、「本次 tokens」用它）。
@@ -3740,10 +4103,14 @@ function handleEvent(ev, c) {
           currency: d.currency || "",
         });
       }
-      $("#usage-hint").textContent =
-        `${fmtNum(S.turnUsage.total_tokens)} tokens · ${fmtCost(S.turnUsage.cost || 0, S.turnUsage.currency)}`;
-      renderInfoPanel();
-      renderStatusBar();
+      // ★ 顶部提示条 / 右侧面板 / 状态栏都是**全局唯一**的一份，属于眼前这个
+      //   对话 —— 后台会话的用量事件不该改它们（否则用户会看到别人的读数）。
+      if (isCurrentSid(own)) {
+        $("#usage-hint").textContent =
+          `${fmtNum(S.turnUsage.total_tokens)} tokens · ${fmtCost(S.turnUsage.cost || 0, S.turnUsage.currency)}`;
+        renderInfoPanel();
+        renderStatusBar();
+      }
       break;
     }
     case "error": {
@@ -3865,8 +4232,7 @@ function handleEvent(ev, c) {
             cost: (d.data && d.data.cost) || 0,
             currency: (d.data && d.data.currency) || "",
           });
-          renderStatusBar();
-          renderInfoPanel();
+          if (isCurrentSid(own)) { renderStatusBar(); renderInfoPanel(); }
         }
       } catch (e) {}
       const meta = c.assist && c.assist.closest(".msg").querySelector(".meta");
@@ -4309,7 +4675,11 @@ function openImagePreview(att) {
 function renderQueue() {
   const box = $("#composer-queue");
   if (!box) return;
-  const q = S.queue || [];
+  // ★ 排队区显示的是**当前这个对话**的队列。这里显式取当前会话，
+  //   不用 S.queue 访问器 —— 它可能正处在别的会话上下文里（回合收尾会带上下文），
+  //   那样就会把后台会话的排队项画到眼前的输入区上。
+  const cur = sessState(S.sessionId || "");
+  const q = cur.queue || [];
   box.hidden = !q.length;
   if (!q.length) { box.innerHTML = ""; return; }
   box.innerHTML = q.map((it, i) => `
@@ -4322,8 +4692,9 @@ function renderQueue() {
       <button class="q-btn q-del" data-q-del="${esc(it.id)}" title="从队列删除">${icon("close", 12)}</button>
     </div>`).join("");
   $$("[data-q-del]", box).forEach((b) => b.onclick = () => {
-    S.queue = S.queue.filter((x) => x.id !== b.dataset.qDel);
+    cur.queue = cur.queue.filter((x) => x.id !== b.dataset.qDel);
     renderQueue();
+    syncQueue();
   });
   $$("[data-q-back]", box).forEach((b) => b.onclick = () => takeBackQueued(b.dataset.qBack));
   $$(".q-text", box).forEach((el) => el.onclick = () => takeBackQueued(el.closest(".q-item").dataset.q));
@@ -4368,9 +4739,10 @@ function bindQueueDrag(box) {
 
 /** 取回队列项到输入框（取出即从队列移除）。 */
 function takeBackQueued(id) {
-  const i = (S.queue || []).findIndex((x) => x.id === id);
+  const cur = sessState(S.sessionId || "");
+  const i = (cur.queue || []).findIndex((x) => x.id === id);
   if (i < 0) return;
-  const [it] = S.queue.splice(i, 1);
+  const [it] = cur.queue.splice(i, 1);
   const inp = $("#input");
   if (inp) {
     inp.value = it.text || "";
@@ -4380,50 +4752,71 @@ function takeBackQueued(id) {
     inp.focus();
   }
   renderQueue();
+  syncQueue();
 }
 
 /** 立即强制发送：把这条提到队首 → 中断当前轮 → 当前轮收尾后立刻发它。 */
 function sendQueuedNow(id) {
-  const i = (S.queue || []).findIndex((x) => x.id === id);
+  const sid = S.sessionId || "";
+  const cur = sessState(sid);
+  const i = (cur.queue || []).findIndex((x) => x.id === id);
   if (i < 0) return;
-  const [it] = S.queue.splice(i, 1);
-  S.queue.unshift(it);
+  const [it] = cur.queue.splice(i, 1);
+  cur.queue.unshift(it);
   renderQueue();
-  if (S.streaming) {
-    S._cancelled = true;
-    try { if (S.abort) S.abort.abort(); } catch (e) {}
-    try { api("/api/chat/stop", { method: "POST", body: { session_id: S.sessionId } }); } catch (e) {}
+  syncQueue();
+  if (cur.streaming) {
+    cur._cancelled = true;
+    try { if (cur.abort) cur.abort.abort(); } catch (e) {}
+    try { api("/api/chat/stop", { method: "POST", body: { session_id: sid } }); } catch (e) {}
     toast("已中断当前回答，正在发送这条…", "");
   } else {
-    dispatchNextQueued();
+    dispatchNextQueued(sid);
   }
 }
 
-/** 把队首真正发出去：写进输入框 → 调 send()（复用完整发送流程）。 */
-function dispatchNextQueued() {
-  if (S.streaming) return;
-  if (!(S.queue || []).length) return;
-  const it = S.queue.shift();
-  syncQueue();                  // ★ 出队也落盘：否则刷新后已发出去的会「复活」
-  const inp = $("#input");
-  if (!inp) return;
-  inp.value = it.text || "";
-  if (it.atts && it.atts.length) { S.attachments = it.atts.slice(); renderAtts(); }
-  renderQueue();
-  send();
+/** 把队首真正发出去。
+    ★ sid 显式传入：回合收尾时调它，那一刻当前显示的会话可能已经换人了
+      （旧写法用 S.streaming / S.queue 会把**别人的**队首发出去）。
+    ★★ 两种路径必须分开：
+      · 用户正看着这个对话 → 沿用旧路径（写进输入框再 send），他能看到自己排的队被发出；
+      · **后台接力**（工作区写租约让后到的会话排队等前一个跑完）→ 这个对话可能
+        根本不在眼前，绝不能读/写输入框：读了会发出用户正在敲的内容，
+        写了会把他打的字替换掉。直接显式传参发给它自己的会话。 */
+function dispatchNextQueued(sid) {
+  const key = sid || S.sessionId || "";
+  const cur = sessState(key);
+  if (cur.streaming) return;
+  if (!(cur.queue || []).length) return;
+  const it = cur.queue.shift();
+  syncQueue(key);               // ★ 出队也落盘：否则刷新后已发出去的会「复活」
+  const live = isCurrentSid(key);
+  const inp = live ? $("#input") : null;
+  if (inp) {
+    inp.value = it.text || "";
+    if (it.atts && it.atts.length) { S.attachments = it.atts.slice(); renderAtts(); }
+    renderQueue();
+    send();
+    return;
+  }
+  if (live) renderQueue();
+  send({ sid: key, text: it.text || "", atts: it.atts || [] });
 }
 
 /* ★ 待发队列持久化（实测「排 3 条指令，一刷新全没了」）。
    做法：队列任何变化都同步落盘（增/删/取回/调序/出队），
    启动或切换会话时按会话读回来。存储在后端 KVStore，键按会话区分。 */
-async function syncQueue() {
-  if (!S.sessionId) return;
+async function syncQueue(sid) {
+  // ★ 显式指定会话：后台接力的出队也要写回**它自己**的队列，
+  //   用 S.sessionId 会把别人的队列覆盖掉。
+  const key = sid || S.sessionId || "";
+  if (!key) return;
   try {
     await api("/api/queue", {
       method: "POST",
       body: {
         action: "set",
-        items: (S.queue || []).map((x) => ({
+        items: (sessState(key).queue || []).map((x) => ({
           id: x.id, text: x.text || "", created_at: x.created_at || 0,
         })),
       },
@@ -4433,13 +4826,15 @@ async function syncQueue() {
 
 /** 从服务端读回该会话的待发队列（刷新/重开页面后恢复）。 */
 async function loadQueue() {
-  if (!S.sessionId) return;
+  const sid = S.sessionId || "";
+  if (!sid) return;
   try {
-    const d = await api("/api/queue?session_id=" + encodeURIComponent(S.sessionId));
+    const d = await api("/api/queue?session_id=" + encodeURIComponent(sid));
     const items = (d && d.items) || [];
+    const cur = sessState(sid);
     // 只在本地队列为空时恢复，避免覆盖用户刚敲进去的新条目
-    if (!(S.queue || []).length && items.length) {
-      S.queue = items.map((x) => ({ id: x.id, text: x.text || "", atts: [] }));
+    if (!(cur.queue || []).length && items.length) {
+      cur.queue = items.map((x) => ({ id: x.id, text: x.text || "", atts: [] }));
       renderQueue();
       toast(`已恢复 ${items.length} 条排队指令`, "");
     }
@@ -4456,15 +4851,19 @@ inputEl.addEventListener("keydown", (e) => {
 });
 $("#send-btn").onclick = send;
 $("#stop-btn").onclick = async () => {
-  S._cancelled = true;   // 用户主动停止：断线重试逻辑据此放弃重发
+  // ★ 停止的是**当前显示的这个会话**（按钮就是它的界面的一部分），
+  //   所以这里的 S.* 访问器解析到的正是它 —— 显式取出来更清楚。
+  const sid = S.sessionId || "";
+  const cur = sessState(sid);
+  cur._cancelled = true;   // 用户主动停止：断线重试逻辑据此放弃重发
   // ★ 标记「本轮是被停的」：收尾补发兜底据此拒绝补写（见 recoverFinalText）。
   //   停掉的回合没有「最终交付文字」，后端也不会为它落库（core/agent.py 的 `if content:`），
   //   补发只会把上一轮的回答翻出来重贴一遍 —— 实测「发的自行车，却冒出上一句你好」。
-  S._cancelledTurn = true;
+  cur._cancelledTurn = true;
   // ★ 先**就地**断开前端的流式连接，界面立刻停下来；再通知后端取消这一轮。
-  try { if (S.abort) S.abort.abort(); } catch (e) {}
+  try { if (cur.abort) cur.abort.abort(); } catch (e) {}
   setStatus("ok", "已停止");
-  try { await api("/api/chat/stop", { method: "POST", body: { session_id: S.sessionId } }); }
+  try { await api("/api/chat/stop", { method: "POST", body: { session_id: sid } }); }
   catch (e) { toast(e.message, "err"); }
 };
 /* 权限等级改由输入框上方的 #perm-chip 控制（只看不改 / 工作区可改 / 完全权限） */
@@ -4554,9 +4953,15 @@ PAGES.memory = async () => {
         开启长期记忆（跨对话记住你的偏好和项目背景）</label>
       <div class="grid c2" style="margin-top:12px">
         <div class="field"><label>每次最多带几条记忆<span class="hint">是「条数」，不是字数</span></label>
-          <input type="number" id="ms-topk" value="${mem.recall_top_k || 6}"></div>
+          <input type="number" id="ms-topk" min="1" max="50" value="${mem.recall_top_k || 6}"></div>
         <div class="field"><label>召回最低相关度<span class="hint">低于这个分数就不带进来（0~1）</span></label>
-          <input type="number" id="ms-minscore" step="0.01" value="${mem.recall_min_score != null ? mem.recall_min_score : 0.22}"></div>
+          <input type="number" id="ms-minscore" step="0.01" min="0" max="1" value="${mem.recall_min_score != null ? mem.recall_min_score : 0.22}"></div>
+      </div>
+      <div class="grid c2" style="margin-top:12px">
+        <div class="field"><label>每条记忆最多送多少字<span class="hint">太短会把经验截成半条</span></label>
+          <input type="number" id="ms-bodychars" min="200" max="8000" step="100" value="${mem.recall_body_chars != null ? mem.recall_body_chars : 1200}"></div>
+        <div class="field"><label>记忆整段 token 预算<span class="hint">放宽单条时这里要一起加</span></label>
+          <input type="number" id="ms-recallbudget" min="500" max="20000" step="100" value="${mem.recall_budget_tokens != null ? mem.recall_budget_tokens : 3200}"></div>
       </div>
       <label class="switch" style="margin-top:12px"><input type="checkbox" id="ms-vec"${mem.use_vector !== false ? " checked" : ""}>
         用向量检索提高召回质量（失败自动退回关键词）</label>
@@ -4607,7 +5012,7 @@ PAGES.memory = async () => {
           <span class="spacer"></span>
           <span style="font-size:11px;color:var(--text-faint)">重要度 ${(m.importance || 0).toFixed(2)} · 访问 ${m.access_count || 0} 次 · ${ago(m.updated_at)}</span>
         </div>
-        <div style="font-size:12.5px;color:var(--text-soft);white-space:pre-wrap;max-height:120px;overflow:auto">${esc(m.content)}</div>
+        <div style="font-size:12.5px;color:var(--text-soft);white-space:pre-wrap">${memoBodyHtml(m.content, m.id)}</div>
         <div class="row tight" style="margin-top:7px">
           <button class="btn sm ghost" data-edit="${esc(m.id)}">编辑</button>
           <button class="btn sm ghost" data-pin="${esc(m.id)}" data-v="${m.pinned ? 0 : 1}">${m.pinned ? "取消置顶" : "置顶"}</button>
@@ -4770,10 +5175,13 @@ PAGES.memory = async () => {
     } catch (e) { toast("保存失败：" + e.message, "err"); }
   };
   const msOn = $("#ms-on"), msK = $("#ms-topk"), msS = $("#ms-minscore"), msV = $("#ms-vec");
+  const msBC = $("#ms-bodychars"), msRB = $("#ms-recallbudget");
   if (msOn) msOn.onchange = () => saveMem({ enabled: msOn.checked });
   if (msV) msV.onchange = () => saveMem({ use_vector: msV.checked });
   if (msK) msK.onchange = () => saveMem({ recall_top_k: Math.max(1, Math.floor(Number(msK.value) || 6)) });
   if (msS) msS.onchange = () => saveMem({ recall_min_score: Math.min(1, Math.max(0, Number(msS.value) || 0)) });
+  if (msBC) msBC.onchange = () => saveMem({ recall_body_chars: Math.max(200, Math.floor(Number(msBC.value) || 1200)) });
+  if (msRB) msRB.onchange = () => saveMem({ recall_budget_tokens: Math.max(500, Math.floor(Number(msRB.value) || 3200)) });
 
   await showTab(MEM_TAB);
 };
@@ -4852,6 +5260,25 @@ function topicTag(m) {
   return `<span class="tag" title="同一主题只保留一个活跃值">主题：${esc(k)}</span>`;
 }
 
+/** 记忆正文的展示片段：短的直接全显，长的给「展开全文」。
+    ★ 为什么必须有：旧实现写死 `.slice(0, 400)` —— 既没有省略号也不能展开，
+      看起来就像「这条记忆只存了半截」。
+    ★ 为什么用 <details>：设置中心是搬节点渲染的，自建按钮绑的 onclick 可能失效；
+      <details> 是原生折叠，不依赖事件绑定。
+    两个渲染路径（设置页 loadMemoryPanel / 记忆页 PAGES.memory）共用它，避免口径分叉。 */
+function memoBodyHtml(content, id) {
+  const text = String(content == null ? "" : content);
+  const SHORT = 220;                  // 这个长度以内直接全显，不必折叠
+  if (text.length <= SHORT) return esc(text);
+  // 折叠时的预览：按整行截，避免把一行切成半截（看着像数据损坏）
+  let cut = text.slice(0, SHORT);
+  const nl = cut.lastIndexOf("\n");
+  if (nl > SHORT * 0.5) cut = cut.slice(0, nl);
+  return `${esc(cut)}…\n`
+    + `<details class="memo-full"><summary>展开全文（共 ${fmtNum(text.length)} 字）</summary>`
+    + `<div class="memo-fulltext" style="white-space:pre-wrap">${esc(text)}</div></details>`;
+}
+
 async function loadMemoryPanel() {
   const lists = $$("#m-list");
   if (!lists.length) return;
@@ -4883,7 +5310,7 @@ async function loadMemoryPanel() {
           <button class="btn ghost sm" data-mhist="${esc(m.id)}" title="查看修订历史 / 撤回">历史</button>
           <button class="btn ghost sm" data-mdel="${esc(m.id)}" title="删除这条记忆">${icon("trash", 13)}</button>
         </div>
-        <div class="memo-body">${esc(String(m.content || "").slice(0, 400))}</div>
+        <div class="memo-body">${memoBodyHtml(m.content, m.id)}</div>
         <div class="memo-hist" id="mh-${esc(m.id)}" style="display:none"></div>
       </div>`).join("")
     : `<div class="memo-empty">还没有记忆。和 AI 说「记住：……」就会出现在这里。</div>`;
@@ -7194,12 +7621,23 @@ function connectWS() {
     WS.onmessage = (e) => {
       let ev;
       try { ev = JSON.parse(e.data); } catch (err) { return; }
-      if (ev.type === "approval.request") showApproval(ev.data);
-      else if (ev.type === "notify") {
+      // ★★ WebSocket 是**全局**通道（不分会话），所以每条事件都要按它自己的
+      //   会话归属落位：审批卡要进那张请求所属对话的容器，排队提示只对
+      //   「正在看的那个对话」生效。旧写法直接往当前界面写，切走后就成了串台。
+      const evSid = ev.session_id || (ev.data && ev.data.session_id) || "";
+      if (ev.type === "approval.request") {
+        withBox(evSid || (ev.data && ev.data.session_id) || "", () => showApproval(ev.data));
+      } else if (ev.type === "workspace.queue") {
+        // 只画当前显示的会话：后台会话的排队状态不该出现在眼前这个对话上。
+        if (!evSid || isCurrentSid(evSid)) renderWsLock(ev.data);
+      } else if (ev.type === "notify") {
         toast(`${(ev.data || {}).title || ""}：${(ev.data || {}).message || ""}`, "");
       } else if (ev.type === "task.update" || ev.type === "goal.update" || ev.type === "memory") {
         // ★ 待办/目标变了就刷新面板（旧写法只顺手点个徽标，清单本身从不显示）
-        if (ev.type !== "memory") { try { refreshTodos(); } catch (e2) {} }
+        //   只刷当前对话的：别的会话的清单不该覆盖眼前这个面板。
+        if (ev.type !== "memory") {
+          if (!evSid || isCurrentSid(evSid)) { try { refreshTodos(); } catch (e2) {} }
+        }
         if (S.page !== "memory" && ev.type === "memory") setBadge("memory", "•");
       } else if (ev.type === "scheduler.job.end") {
         const d2 = ev.data || {};

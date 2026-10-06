@@ -1,6 +1,6 @@
 {
   "name": "fengcode-desktop",
-  "version": "1.2.19",
+  "version": "1.2.20",
   "description": "Fengcode 桌面端 —— 托盘、全局快捷键、系统通知、拖拽、多标签",
   "main": "main.js",
   "author": "Fengcode Contributors",

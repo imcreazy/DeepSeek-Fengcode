@@ -43,8 +43,13 @@ test('后端：循环退出后有统一的 usage 补发出口（停止/中断不
 });
 
 test('前端：usage 事件到达时同时刷新状态栏与信息面板', () => {
-  const i = appSrc.indexOf('case "usage"');
-  assert.ok(i > 0, 'app.js 必须有 case "usage" 分支');
+  // ★ 从 `function handleEvent` 之后再找 case —— 源码**注释**里也出现过
+  //   `case "usage"` 这段字样（讲历史坑时引用过），从头 indexOf 会切到注释上，
+  //   于是断言检查的是一段注释、必然失败（这条测试因此长期报假故障）。
+  const h = appSrc.indexOf('function handleEvent');
+  assert.ok(h > 0, 'app.js 必须有 handleEvent');
+  const i = appSrc.indexOf('case "usage"', h);
+  assert.ok(i > h, 'app.js 必须有 case "usage" 分支');
   // 分支到下一个 case 为止（不能截断，否则会把别的分支算进来）。
   const rest = appSrc.slice(i);
   const next = rest.indexOf('case "', 10);

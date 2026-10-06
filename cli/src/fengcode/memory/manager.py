@@ -786,20 +786,26 @@ class MemoryManager:
         query: str,
         *,
         session_id: str | None = None,
-        max_tokens: int = 1600,
+        max_tokens: int | None = None,
         top_k: int | None = None,
     ) -> str:
         """生成注入系统提示的记忆片段。"""
         items = await self.recall(query, session_id=session_id, top_k=top_k)
         if not items:
             return ""
+        # ★ 单条正文字数 / 整段预算都改成读配置（默认 1200 字 / 3200 token）。
+        #   旧实现两条都写死（`truncate(it.content, 400)`、max_tokens=1600）：
+        #   400 字常常只够写半条经验，模型照着半截去用；而且单条一放宽，
+        #   写死的预算又会让第一条把钱花光、后面一条都进不去 —— 两者必须一起调。
+        body_chars = max(200, int(getattr(self.config, "recall_body_chars", 1200) or 1200))
+        budget = int(max_tokens if max_tokens is not None
+                     else (getattr(self.config, "recall_budget_tokens", 3200) or 3200))
         lines = ["<memory>", "以下是与当前话题相关的历史记忆（供参考，可能过时，必要时先核实）："]
-        budget = max_tokens
         for it in items:
             block = f"· [{_kind_label(it.kind)}] {it.title or _auto_title(it.content)}"
             if it.description:
                 block += f"（{it.description}）"
-            body = truncate(it.content, 400)
+            body = truncate(it.content, body_chars)
             block += f"\n  {body}"
             cost = estimate_tokens(block)
             if cost > budget:

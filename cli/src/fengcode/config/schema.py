@@ -208,6 +208,14 @@ class MemoryConfig(_Base):
     summarize_threshold_tokens: int = 6000
     recall_top_k: int = 6
     recall_min_score: float = 0.22
+    # ★ 每条记忆注入模型的正文字数上限。
+    #   为什么从写死的 400 改成可配：400 字对「一条含路径、命令、字段名的经验」
+    #   往往只够写到一半，模型看到的是被截断的经验，用起来会照着半截去试。
+    #   默认放宽到 1200 字。
+    recall_body_chars: int = 1200
+    # ★ 整段 <memory> 的 token 预算。单条放宽后预算必须一起抬，
+    #   否则放宽的第一条就把预算吃光，后面的记忆一条都进不去（反而更少信息）。
+    recall_budget_tokens: int = 3200
     # 向量：优先 API embedding，失败自动降级为本地哈希向量
     embedding_provider: str | None = None
     embedding_model: str = ""

@@ -160,6 +160,12 @@ class Ev:
     PROGRESS = "progress"
     STATUS = "status"
     NOTIFY = "notify"
+    # ★ 工作区写租约的排队播报：告诉界面「本工作区谁在用、你排第几」。
+    #   为什么单独一个事件而不是复用 log/status：排队是有状态的过程
+    #   （排队中 → 排到了 → 结束），前端要按状态改输入区的提示，
+    #   塞进普通日志里既刷屏又拿不到结构化的位置信息。
+    #   事件带的是**排队者自己**的 session_id，只有它的界面收得到。
+    WORKSPACE_QUEUE = "workspace.queue"
 
 
 __all__ = ["Event", "EventBus", "get_bus", "reset_bus", "Ev"]

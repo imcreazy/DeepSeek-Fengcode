@@ -187,6 +187,78 @@ class TestWorkspaces:
         assert store.get(ws["id"])["name"] == "改好了"
 
 
+class TestSessionWorkspaceIsolation:
+    """会话的工作区必须真正决定「文件写到哪」。
+
+    回归现场：会话表里的 workspace 此前只用于侧栏分组，从没传给 Agent ——
+    不管在哪个项目里新建会话，文件都写进同一个默认工作目录。缺了这一环，
+    后面的工作区写租约也无从谈起（所有会话会被算成同一个工作区）。
+    """
+
+    def test_session_workspace_resolves_absolute_path(self):
+        from fengcode.server.app import AppState
+        from fengcode.storage.db import get_db
+        from fengcode.storage.sessions import SessionStore
+
+        d = str(Path(_TMP) / "proj-path")
+        s = SessionStore(get_db()).create(title="路径会话", workspace=d)
+        st = AppState()
+        assert st._norm_ws(st.session_workspace(s["id"])) == st._norm_ws(d)
+
+    def test_session_workspace_resolves_project_name(self):
+        """老数据 / 手填的是项目名时，按名字回查目录。"""
+        from fengcode.server.app import AppState
+        from fengcode.storage.db import get_db
+        from fengcode.storage.sessions import SessionStore
+        from fengcode.storage.workspaces import WorkspaceStore
+
+        p = str(Path(_TMP) / "proj-name")
+        ws = WorkspaceStore().create(name="按名字的项目", path=p)
+        s = SessionStore(get_db()).create(title="名字会话", workspace=ws["name"])
+        st = AppState()
+        assert st._norm_ws(st.session_workspace(s["id"])) == st._norm_ws(p)
+
+    def test_session_without_workspace_falls_back(self):
+        """没记工作区的会话不该被塞一个空目录。"""
+        from fengcode.server.app import AppState
+        from fengcode.storage.db import get_db
+        from fengcode.storage.sessions import SessionStore
+
+        s = SessionStore(get_db()).create(title="无工作区")
+        st = AppState()
+        assert st.session_workspace(s["id"]) is None
+
+    def test_set_workspace_moves_guard_and_sandbox(self):
+        """切工作目录要连路径守卫、审批门的 guard、沙箱 cwd 一起换。
+
+        回归现场：只改 self.workspace 会变成「人在 A 项目干活、守卫仍按 B 项目
+        判越界」，表现为在自己项目里写文件反而弹审批。
+        """
+        from fengcode.core.agent import Agent
+
+        a = Agent(workspace=str(Path(_TMP) / "ws-a"), session_id="sw1")
+        b = str(Path(_TMP) / "ws-b")
+        a.set_workspace(b)
+        assert Path(a.workspace) == Path(b)
+        assert Path(a.guard.workspace) == Path(b)
+        # 审批门自带一份 guard，漏掉它守卫就只在部分工具上生效
+        assert Path(a.approval.guard.workspace) == Path(b)
+        assert Path(a.sandbox.cwd) == Path(b)
+
+    def test_set_workspace_persists_to_session(self):
+        """换目录要写回会话记录，否则下次建 Agent 又按旧目录算。"""
+        from fengcode.core.agent import Agent
+        from fengcode.storage.db import get_db
+        from fengcode.storage.sessions import SessionStore
+
+        ss = SessionStore(get_db())
+        s = ss.create(title="跟随会话", workspace=str(Path(_TMP) / "ws-old"))
+        a = Agent(workspace=str(Path(_TMP) / "ws-old"), session_id=s["id"])
+        b = str(Path(_TMP) / "ws-new")
+        a.set_workspace(b)
+        assert Path((ss.get(s["id"]) or {}).get("workspace")) == Path(b)
+
+
 # ==========================================================================
 # 会话与工作模式的持久化联动
 # ==========================================================================

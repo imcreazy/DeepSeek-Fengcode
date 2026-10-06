@@ -227,6 +227,41 @@ class Agent:
             self._subagent_runner = SubAgentRunner(agent=self)
         return self._subagent_runner
 
+    def set_workspace(self, path: str | Path) -> None:
+        """切换本会话的工作目录：目录、路径守卫、审批门、沙箱 cwd **必须一起换**。
+
+        ★ 为什么不能只改 self.workspace：守卫的白名单是**按工作目录**算出来的，
+          沙箱的 cwd 也是。只改目录名会变成「人在 A 项目里干活、守卫仍按 B 项目
+          判越界」—— 实测表现就是「在自己项目里写文件反而弹审批」。
+        """
+        if path is None or not str(path).strip():
+            return
+        p = Path(str(path)).expanduser()
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        self.workspace = p
+        cfg = self.config.permissions
+        guard_kw = dict(
+            workspace=self.workspace,
+            write_paths=cfg.write_paths,
+            read_paths=cfg.read_paths,
+            deny_patterns=cfg.deny_patterns or None,
+            mode=cfg.mode,
+        )
+        self.guard = PathGuard(**guard_kw)
+        # 审批门自带一份 guard（判定走它），漏掉这份等于守卫只在部分工具上生效。
+        if getattr(self, "approval", None) is not None:
+            self.approval.guard = PathGuard(**guard_kw)
+        if getattr(self, "sandbox", None) is not None:
+            self.sandbox.cwd = self.workspace
+        # 会话记录跟着改：否则下次建 Agent 又按旧目录算，两边不一致。
+        try:
+            self.sessions.update(self.session_id, workspace=str(self.workspace))
+        except Exception:
+            pass
+
     def tool_context(self, session_id: str | None = None, **extra: Any) -> ToolContext:
         # ★ 注入提问通道：Server（Web/桌面端）会设置 self._asker，
         #   ask_user 工具据此把问题发给界面并**等待**用户选择。
@@ -727,6 +762,12 @@ class Agent:
             step_text = ""       # 本轮产生的正文
             step_reason = ""     # 本轮产生的思考
             new_evidence = False  # 本步是否产生新证据（无进展防护用它判定是否绕圈）
+            # ★★ 单次调用的计时起点必须在这里取，**不能**用回合起点的 t0。
+            #   实测事故：旧写法记 `duration=time.time() - t0`（回合开始至今），
+            #   一轮工具循环会调用几十次模型，每次都把「从回合开始到现在」记一遍 ——
+            #   累加起来是二次增长：实际跑了 15 分钟的会话，侧栏显示 16h51m
+            #   （60 次调用 × 平均十几分钟 ≈ 17 小时，正好对上）。
+            call_t0 = time.time()
             try:
                 if stream:
                     resp, ev_text, ev_reason = await self._stream_once(
@@ -819,7 +860,9 @@ class Agent:
                 self.stats.record(
                     provider=resp.provider or "", model=resp.model or "",
                     usage=resp.usage, cost=cost_sum, currency=currency,
-                    duration=time.time() - t0, session_id=sid, kind="chat", error=resp.error,
+                    # ★ 记**这一次调用**的耗时（不是回合开始至今，见上面 call_t0 的说明）。
+                    #   累加口径才对得上「这个会话真的跑了多久」。
+                    duration=time.time() - call_t0, session_id=sid, kind="chat", error=resp.error,
                 )
             except Exception:
                 pass

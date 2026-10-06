@@ -6,7 +6,7 @@
 > 符号名可靠，且有 `scripts/check_code_map.py` 自动对账（符号被改名/删除会报错）。
 >
 > 工程根 `D:\Fengcode`。**改功能只改 `cli/`**；`desktop/` 只是 Electron 外壳（无业务逻辑）。
-> 源码规模：约 77 个源码文件 / 3.6 万行。其中 `server/static/app.js` 单文件约 8335 行——
+> 源码规模：约 77 个源码文件 / 3.9 万行。其中 `server/static/app.js` 单文件约 8500 行——
 > **不要整文件通读**，按下面的表定位到函数再读。
 
 ---
@@ -78,6 +78,8 @@
 |---|---|---|
 | Markdown → HTML | `md()` | **手写实现，不引第三方库**。改渲染规则改这里 |
 | 新增一条消息气泡 | `addMessage()` | 所有气泡（用户/AI/系统）都走它；带 `data-user-msg` 的是轮次锚点 |
+| **消息容器（每会话一个）** | `msgBox()` / `paneOf()` / `setPane()` / `dropPane()` | ★ 见 3.5；`msgBox()` 返回**当前上下文会话**的 pane，不是 `#messages` |
+| 会话作用域查询 | `paneQ()` / `paneQA()` | 查「本会话」的消息用它们；直接写 `$("#messages …")` 会数进隐藏会话的消息 |
 | 从库里重画历史 | `renderStored()` | 切换会话、重启后走这条；**不经过 `handleEvent`** |
 | 事件总入口 | `handleEvent()` | 流式事件的唯一分发点，见下表 |
 | 清空消息区 | `clearMessages()` | 切会话/新建时调用；会一并恢复未答复的确认卡 |
@@ -123,6 +125,27 @@
 | 内置浏览器（右侧栏） | `tools/builtin/browser.py` + `app.js` 的 `IP_TAB` 相关 |
 | 主题（配色/图片主题） | `applyTheme()` / `applySkin()` / `applyImageTheme()` / `syncImageThemeDim()` |
 | 字号缩放 | `applyFontSize()`（写 `html[data-fs]`，样式全部 `calc(Npx * var(--ui-scale))`） |
+
+### 3.5 ★★ 会话级运行状态与「多对话并行」（改这几块前必读）
+
+同一工作区里可以同时跑多个对话，切走的那条流**继续在后台产出**、切回来能接上。
+支撑它的是两层隔离，都在 `app.js` 里：
+
+| 机制 | 符号 | 说明 |
+|---|---|---|
+| **按会话分桶的运行状态** | `sessDefaults()` / `SESS` / `sessState()` | streaming / 计时 / 速率 / 中止句柄 / 队列 / 本轮用量 / 本轮消息序号，每个对话各一份 |
+| 状态访问器 | `S` 上由 `Object.keys(sessDefaults())` 统一挂的 getter/setter | 读 `S.streaming` 即「**当前上下文会话**的这一份」，全站老写法不用改 |
+| **当前上下文会话** | `CUR.box` / `activeSid()` | 空 = 跟随界面显示的会话 |
+| **切换上下文** | `withBox(sid, fn)` | ★ 回调是 async 时**等它落定**才还原（否则收尾段全在 `await` 之后，会写到别的会话上） |
+| 是否眼前这个会话 | `isCurrentSid(sid)` | 全局面板（状态栏 / 右侧栏 / 主题遮罩 / 滚动）只在它为真时才刷新 |
+| 每会话消息容器 | `paneOf()` / `setPane()` / `msgBox()` / `paneQ()` / `paneQA()` | 一个 `.msg-pane` 一个对话；隐藏的用 `display:none`，DOM 保留 |
+| **滚动宿主** | `scrollHost()` | ★ 永远是 `#messages`，**不是** `msgBox()`（pane 自己不滚动） |
+| 回合的显式会话参数 | `send(opts)` / `dispatchNextQueued(sid)` / `syncQueue(sid)` | 后台接力时**不读也不写**当前输入框（会发出/覆盖别人的内容） |
+
+★★ **两个最容易踩的点**：
+1. 一个 async 函数里若跨越 `await`，状态读写必须**钉在发起时的会话**上（`const T = sessState(sid)`），
+   不能靠 `S.*` 访问器 —— 用户中途切走后 `S.*` 会解析到**新**会话。
+2. `handleEvent()` 入口会用 `withBox` 把事件划进**它自己那条流**的上下文；它不再是「切走即丢弃」。
 
 ---
 
@@ -179,6 +202,7 @@
 | 换模型重算上限 | `app.js::onModelPicked()` |
 | 后端广播读数 | `core/agent.py::run()` 里的 `Ev.USAGE`（**收尾时无条件补发一次**） |
 | 用量落库 | `storage/stats.py::StatsStore` |
+| **单次调用耗时/会话跨度** | `stats.py::StatsStore.summary()` 的 `span` = 最后一次 − 第一次调用（★ `duration` 是各次耗时之和，**别拿它当「运行时间」**） |
 | 会话读数快照 | `storage/sessions.py`（`meta.last_usage`） |
 | 缓存未命中归因 | `llm/router.py::CacheDiagnostics` |
 
@@ -196,6 +220,8 @@
 | 峰谷价 | `llm/router.py::_in_peak_hours()` / `price_phase()` | 只有价目表填了谷价才生效 |
 | 价目表结构 | `config/schema.py::Price` | `input` / `output` / `cache_hit` / `off_peak_*` / `unit` / `currency` |
 | 用量类型 | `llm/types.py::Usage` | `prompt_tokens` / `cached_tokens` / `completion_tokens` |
+| **按模型汇总** | `storage/stats.py::StatsStore.by_model()` | ★ 带 `HAVING` 过滤：token 与费用全为 0 的条目（失败调用）**不列出**，与前端 `renderUsageBreakdown()` 同口径 |
+| 用量占比展示 | `app.js::renderUsageBreakdown()` | 占比不足 1% 显示「<1%」而非四舍五入成 0%（否则「用过但很少」看起来像「没用过」） |
 
 ---
 
@@ -258,7 +284,9 @@
 | 会话与消息 | `storage/sessions.py::SessionStore` | 会话历史、`meta.last_usage` 快照 |
 | 统计与审计 | `storage/stats.py::StatsStore` / `AuditStore` | 用量日志、审批审计 |
 | 任务/目标/工作流/定时/插件/技能/附件 | `storage/tasks.py`（多个 Store） | 统一放这一个文件 |
-| 工作区 | `storage/workspaces.py::WorkspaceStore` | |
+| 工作区 | `storage/workspaces.py::WorkspaceStore` | 名字 + 目录；★ 会话表里的 `workspace` 存的就是它的**路径** |
+| **会话 → 工作目录** | `server/app.py::AppState.session_workspace()` | 会话记录的路径（或按项目名回查目录）；建 Agent 时按它决定工作目录 |
+| **切换会话工作目录** | `core/agent.py::Agent.set_workspace()` | ★ 目录 / 路径守卫 / 审批门的 guard / 沙箱 cwd **必须一起换**，并写回会话记录 |
 
 ★ **复制 SQLite 库必须连 `-wal` / `-shm` 一起复制**，否则会看到「少了一些会话」的假象。
 
@@ -269,7 +297,8 @@
 | 功能 | 文件::符号 | 说明 |
 |---|---|---|
 | 记忆管理 | `memory/manager.py::MemoryManager` | 分层记忆、召回、重要性/新鲜度 |
-| **记忆注入提示词** | `memory/manager.py::context_block()` | 生成 `<memory>` 块 |
+| **记忆注入提示词** | `memory/manager.py::context_block()` | 生成 `<memory>` 块；★ 单条字数与整段预算读配置 `recall_body_chars` / `recall_budget_tokens`（两者要一起调，否则放宽的单条会吃光预算） |
+| 记忆正文展示片段 | `app.js::memoBodyHtml()` | 设置页与记忆页共用；长文给「展开全文」（用 `<details>`，不依赖事件绑定） |
 | 向量与相似度 | `memory/embedding.py` | `hashing_embed()` / `cosine()` |
 | **压缩切点** | `memory/summarizer.py::split_for_compaction()` | ★ 配对保护（工具调用与结果不许拆开） |
 | 压缩触发判定 | `memory/summarizer.py::should_compact()` / `detect_trigger()` | ★ 实际触发点是 **16 万 token**（`context_soft_limit_tokens`），不是窗口大小 |
@@ -303,11 +332,15 @@
 | 应用装配 / 路由表 | `server/app.py::create_app()` | 所有 `/api/*` 在这里注册 |
 | **对话接口（SSE）** | `server/app.py::api_chat()` | 订阅事件总线，逐条 `_sse()` 下发 |
 | 会话写租约 | `server/app.py::AppState.acquire_session()` | 同一会话禁止两轮并发写 |
+| **工作区写租约（跨会话）** | `server/app.py::AppState.acquire_workspace()` / `release_workspace()` | ★ 同一**目录**只允许一个对话在写，其余 **FIFO 排队**，前一个跑完直接转交（不靠抢占）；键由 `workspace_key()` 归一化目录得到 |
+| 工作区占用/排队状态 | `AppState.workspace_queue_state()` / `workspace_busy()` / `cancel_workspace_waiter()` | 关会话（`drop_agent()`）也会归还锁与队位 |
+| **排队状态查询接口** | `server/app.py::api_workspace_lock()` | `GET /api/workspace-lock`：界面切回会话时**拉**一次（事件只在变化时推） |
 | 审批回填 | `server/app.py::api_approval()` | 界面点按钮后回填 |
 | 审批待确认列表 | `server/app.py::api_pending_approvals()` | |
 | WebSocket 事件 | `server/app.py::ws_events()` | ★ 与 SSE 是**两条独立通道**，同一条事件会各送一份 |
 | 静态页面 | `server/app.py::index()` | 托管 `static/index.html` |
 | 指令文件列举 | `server/app.py::api_instruction_files()` | 列出工作区里的约定文件位置 |
+| 排队事件 | `events.py::Ev.WORKSPACE_QUEUE` | 排队状态变化时按**排队者自己的** session_id 下发（只有它的界面收得到） |
 
 ---
 
@@ -319,6 +352,7 @@
 | 读取与迁移 | `config/manager.py::ConfigManager` | ★ 含 `_migrate_legacy_defaults()`：改默认值时必须迁移用户配置里的旧值 |
 | 默认配置 | `config/manager.py::default_config()` | |
 | 从 .env 导入 | `config/manager.py::parse_env_file()` | |
+| **记忆召回上限** | `config/schema.py::MemoryConfig` 的 `recall_body_chars` / `recall_budget_tokens` | 单条注入字数（默认 1200）与整段 token 预算（默认 3200）；★ 两者必须一起调 |
 
 ★ **改默认值时必须同步迁移用户已写入的旧值**（已踩过两次：`max_tokens`、`max_steps`），否则用户升级了仍跑旧行为。
 ★ 改完跑 `python scripts/check_config_fields.py`（抓前后端字段不一致）。

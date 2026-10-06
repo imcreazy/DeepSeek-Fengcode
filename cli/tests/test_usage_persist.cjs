@@ -18,9 +18,15 @@ const fs = require('node:fs');
 const APP = 'D:/Fengcode/cli/src/fengcode/server/static/app.js';
 const source = fs.readFileSync(APP, 'utf8');
 
+/** 取 handleEvent 里真正的 usage 分支。
+    ★ 必须从 `function handleEvent` 之后再找 `case "usage"`：源码里**注释**
+      也会出现这段字样（讲历史坑时引用过），从头 indexOf 会切到注释上，
+      于是断言检查的是一段注释、必然失败 —— 这条测试因此长期报假故障。 */
 function usageBranch() {
-  const i = source.indexOf('case "usage"');
-  assert.ok(i > 0, '应能找到 usage 分支');
+  const h = source.indexOf('function handleEvent');
+  assert.ok(h > 0, '应能找到 handleEvent');
+  const i = source.indexOf('case "usage"', h);
+  assert.ok(i > h, '应能找到 usage 分支');
   const rest = source.slice(i);
   const next = rest.indexOf('case "', 10);
   return next > 0 ? rest.slice(0, next) : rest.slice(0, 2000);

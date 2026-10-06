@@ -14,7 +14,7 @@ import os
 import re as _re
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from starlette.applications import Starlette
 from starlette.responses import (
@@ -216,6 +216,12 @@ class AppState:
         #   同一个会话追加消息，历史顺序会乱、上下文统计也会互相覆盖。
         #   这里用「会话 → 持锁者标识」记录当前写者，冲突时**明确报错**而不是静默交错。
         self._session_writers: dict[str, str] = {}
+        # ★ 工作区写入租约：同一**目录**同时只允许一个会话在写，其余排队接力。
+        #   与会话级租约的区别：同会话并发写没有正确的处理办法（只能拒绝），
+        #   而同工作区的两个对话是「接力」关系 —— 用户在 B 对话发消息的本意
+        #   就是「等那个跑完接着做」，所以这里等待而不是报错。
+        self._ws_writers: dict[str, dict[str, str]] = {}   # 工作区键 → {session_id, holder}
+        self._ws_waiters: dict[str, list[dict[str, Any]]] = {}   # 工作区键 → FIFO 队列
 
     def _make_asker(self, ag: Agent):
         """构造 ask_user 的等待通道：发出问题 → 等界面回填答案。
@@ -249,12 +255,67 @@ class AppState:
         return True
 
     # ---- Agent ---------------------------------------------------------
+    @staticmethod
+    def _norm_ws(p: Any) -> str:
+        """把工作目录路径归一化后比较（大小写、斜杠、结尾分隔符都不该算不同项目）。"""
+        try:
+            return str(Path(str(p)).expanduser().resolve()).rstrip("\\/").lower()
+        except Exception:
+            return str(p or "").rstrip("\\/").lower()
+
+    def session_workspace(self, session_id: str | None) -> str | None:
+        """会话所属项目在磁盘上的真实目录。
+
+        ★ 为什么必须有这一步：会话表里的 ``workspace`` 此前**只用于侧栏分组**，
+          从没传给 Agent —— 于是不管在哪个项目里新建会话，文件都写进同一个
+          默认工作目录（实测症状：在 B 项目里说「建个文件」，它落到默认工作区）。
+          工作区隔离要从「会话 → 目录」这一环补齐，后面的写租约才有意义。
+
+        会话里存的是工作区**路径**（前端新建会话时传的就是它）；老数据/手填的
+        也可能是项目名，这里按名字回查一次。
+        """
+        if not session_id:
+            return None
+        raw = ""
+        try:
+            from ..storage.sessions import SessionStore
+
+            s = SessionStore().get(session_id)
+            raw = str((s or {}).get("workspace") or "").strip()
+        except Exception:
+            return None
+        if not raw:
+            return None
+        try:
+            p = Path(raw).expanduser()
+            if p.is_absolute():
+                return str(p)
+        except Exception:
+            pass
+        try:
+            from ..storage.workspaces import get_workspaces
+
+            ws = get_workspaces().find_by_name(raw)
+            if ws and ws.get("path"):
+                return str(ws["path"])
+        except Exception:
+            pass
+        return None
+
     async def agent(self, session_id: str | None = None, *, workspace: str | None = None) -> Agent:
         async with self._lock:
             if session_id and session_id in self.agents:
                 ag = self.agents[session_id]
                 if getattr(ag, "_asker", None) is None:
                     ag._asker = self._make_asker(ag)
+                # ★ 会话的目录在别处被改过（换项目 / 改了项目路径）时就地跟随，
+                #   否则这个会话会一直用旧目录干活，而侧栏已经把它归到新项目下。
+                want = workspace or self.session_workspace(session_id)
+                if want and self._norm_ws(want) != self._norm_ws(ag.workspace):
+                    try:
+                        ag.set_workspace(want)
+                    except Exception:
+                        pass
                 return ag
             if session_id is None and self.default_agent is not None:
                 ag = self.default_agent
@@ -264,7 +325,9 @@ class AppState:
             from .. import paths
 
             ag = Agent(
-                workspace=workspace or self.manager.config.agent.workspace_override or paths.workspace_dir(),
+                workspace=(workspace or self.session_workspace(session_id)
+                           or self.manager.config.agent.workspace_override
+                           or paths.workspace_dir()),
                 session_id=session_id,
                 config=self.manager.config,
             )
@@ -284,6 +347,13 @@ class AppState:
             if self.default_agent is ag:
                 self.default_agent = None
         self._session_writers.pop(session_id, None)
+        # ★ 关会话要把它的工作区锁和队位一起还掉：会话对象没了，再没人替它
+        #   release —— 留着的话这个工作区会永久判为「有人在写」，
+        #   以后所有对话都排在一个不存在的持有者后面。
+        self.cancel_workspace_waiter(session_id)
+        for key, cur in list(self._ws_writers.items()):
+            if cur.get("session_id") == session_id:
+                self.release_workspace(key, cur.get("holder") or "")
 
     # ---- 会话写入租约（轻量版）------------------------------------------
     def acquire_session(self, session_id: str, holder: str) -> tuple[bool, str]:
@@ -311,6 +381,165 @@ class AppState:
     def session_busy(self, session_id: str) -> str:
         """该会话当前是否有人在写；返回占用者描述（空串表示空闲）。"""
         return self._session_writers.get(session_id, "")
+
+    # ---- 工作区写入租约（跨会话）----------------------------------------
+    def workspace_key(self, session_id: str | None = None, ag: Agent | None = None) -> str:
+        """会话对应的工作区键（归一化后的目录路径）。
+
+        ★ 为什么用目录而不是工作区 id：项目可以改名、可以删了重建，但目录还是
+          同一个 —— 真正互斥的是「对同一批文件的写入」。按 id 算会出现
+          「删掉项目再建一个同名项目，两个会话同时写同一个目录」。
+        """
+        if ag is not None:
+            return self._norm_ws(getattr(ag, "workspace", "") or "")
+        p = self.session_workspace(session_id)
+        if not p:
+            from .. import paths
+
+            p = self.manager.config.agent.workspace_override or paths.workspace_dir()
+        return self._norm_ws(p)
+
+    def workspace_busy(self, key: str) -> str:
+        """该工作区当前是否有人在写；返回占用者**会话 id**（空串表示空闲）。
+
+        ★ 返回会话 id 而不是那个回合的 turn id：turn id（``turn-xxxx``）是内部
+          标识，用户看不懂 —— 界面要拿它去显示「由『某某对话』占用」。
+          回合 id 只在 release 时用来精确比对，见 _ws_writers 存的两份信息。
+        """
+        cur = self._ws_writers.get(key)
+        return str((cur or {}).get("session_id") or "") if cur else ""
+
+    def _session_label(self, session_id: str) -> str:
+        """把会话 id 变成人看得懂的名字（给排队提示用）。"""
+        if not session_id:
+            return "另一个对话"
+        try:
+            from ..storage.sessions import SessionStore
+
+            s = SessionStore().get(session_id) or {}
+            return str(s.get("title") or "").strip() or f"对话 {session_id[-4:]}"
+        except Exception:
+            return f"对话 {session_id[-4:]}"
+
+    def workspace_queue_state(self, session_id: str) -> dict[str, Any]:
+        """查这个会话当前在工作区队列里的状态（给界面用）。
+
+        ``{waiting: bool, position: int, busy_by: str, busy_by_label: str}``。
+        没在排队时 position=0、busy_by 为空 —— 「没有排队」和「排在第一个」
+        必须分得清，否则界面会把「排到了」显示成「排队中」。
+        """
+        for key, q in self._ws_waiters.items():
+            for i, item in enumerate(q):
+                if item.get("session_id") != session_id:
+                    continue
+                # ★ 占用者要取**会话 id**（cur["session_id"]），不是那个回合的
+                #   turn id —— 后者只是内部标识，拿它查会话名会查出空、界面
+                #   只能显示「另一个对话」。这个结构踩过一次（dict 当字符串用）。
+                cur = self._ws_writers.get(key) or {}
+                busy_sid = str(cur.get("session_id") or "")
+                return {
+                    "waiting": True,
+                    "position": i + 1,
+                    "workspace": key,
+                    "busy_by": busy_sid,
+                    "busy_by_label": self._session_label(busy_sid),
+                }
+        return {"waiting": False, "position": 0, "workspace": "", "busy_by": "", "busy_by_label": ""}
+
+    def _notify_workspace_queue(self, session_id: str) -> None:
+        """把排队状态推给这个会话自己的界面。"""
+        try:
+            self.bus.emit(Ev.WORKSPACE_QUEUE, self.workspace_queue_state(session_id),
+                          session_id=session_id)
+        except Exception:
+            pass
+
+    async def acquire_workspace(
+        self,
+        key: str,
+        *,
+        session_id: str,
+        holder: str,
+        on_state: Callable[[], None] | None = None,
+    ) -> bool:
+        """取得工作区写租约；被占用时**排队等待**（先来先服务）。
+
+        返回 True = 拿到了可以开写；False = 等待期间被取消（用户点了停止、会话被关）。
+
+        ★ 为什么这里等待、而会话级租约直接报错：两者语义不同。
+          同一会话被并发写是「同一份历史的交错」，没有正确的处理办法，只能拒绝；
+          同一工作区被两个对话并发写是「接力」关系 —— 用户在 B 对话里发消息时
+          本意是「等我那个跑完接着做」，报错只会逼他盯着前一个手动发。
+        ★ 排序用 FIFO（列表尾部入队），并由 release 直接**转交**给队首，
+          不搞「清空后大家抢」—— 那样先来后到的公平性取决于事件循环调度顺序。
+        """
+        cur = self._ws_writers.get(key)
+        if not cur or cur.get("holder") == holder:
+            self._ws_writers[key] = {"session_id": session_id, "holder": holder}
+            return True
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
+        item = {"session_id": session_id, "holder": holder, "fut": fut}
+        q = self._ws_waiters.setdefault(key, [])
+        q.append(item)
+        if on_state is not None:
+            try:
+                on_state()
+            except Exception:
+                pass
+        try:
+            got = await fut
+            return got == "go"
+        except asyncio.CancelledError:
+            return False
+        finally:
+            try:
+                q.remove(item)
+            except ValueError:
+                pass
+            if not q:
+                self._ws_waiters.pop(key, None)
+
+    def release_workspace(self, key: str, holder: str) -> None:
+        """释放工作区写租约，并把它直接转交给排队最前面的那位。"""
+        cur = self._ws_writers.get(key)
+        if not cur or cur.get("holder") != holder:
+            return
+        q = self._ws_waiters.get(key) or []
+        while q:
+            item = q.pop(0)
+            fut = item.get("fut")
+            if fut is not None and not fut.done():
+                # 先把锁记在它名下再唤醒：它醒来就不必再抢一次（也不会被插队）
+                self._ws_writers[key] = {
+                    "session_id": item.get("session_id") or "",
+                    "holder": item["holder"],
+                }
+                fut.set_result("go")
+                self._notify_workspace_queue(item.get("session_id") or "")
+                return
+        self._ws_writers.pop(key, None)
+
+    def cancel_workspace_waiter(self, session_id: str) -> bool:
+        """把这个会话从工作区队列里撤下来（用户点停止 / 会话关闭）。"""
+        hit = False
+        for key, q in list(self._ws_waiters.items()):
+            for item in list(q):
+                if item.get("session_id") != session_id:
+                    continue
+                fut = item.get("fut")
+                if fut is not None and not fut.done():
+                    fut.set_result("cancel")
+                    hit = True
+                try:
+                    q.remove(item)
+                except ValueError:
+                    pass
+            if not q:
+                self._ws_waiters.pop(key, None)
+        if hit:
+            self._notify_workspace_queue(session_id)
+        return hit
 
     # ---- 后台服务 ------------------------------------------------------
     async def startup(self) -> None:
@@ -1547,6 +1776,18 @@ async def api_chat(request: Any) -> Response:
     holder = new_id("turn")
     ok, busy_by = STATE.acquire_session(ag.session_id, holder)
     if not ok:
+        # ★ 排队等待中的会话：它「忙」是正常的，报「正在执行上一轮」会让人以为
+        #   前一个回合卡住了。这里如实说出它在等什么。
+        qs = STATE.workspace_queue_state(ag.session_id)
+        if qs.get("waiting"):
+            return _err(
+                f"这个对话正在排队等待工作区（第 {qs['position']} 位，"
+                f"当前由「{qs['busy_by_label']}」占用）。要改主意请先点停止。",
+                409,
+                code="workspace_queued",
+                session_id=ag.session_id,
+                queue=qs,
+            )
         return _err(
             f"这个会话正在执行上一轮（{busy_by}），请等它结束或先点停止再发。",
             409,
@@ -1554,11 +1795,22 @@ async def api_chat(request: Any) -> Response:
             session_id=ag.session_id,
         )
 
+    # ★ 工作区写租约：同一目录同时只允许一个会话在写，其余排队接力。
+    #   键是**归一化后的目录**：项目改名、重建都还是同一个目录，
+    #   而真正互斥的是「对同一批文件的写入」（见 AppState.workspace_key）。
+    ws_key = STATE.workspace_key(ag=ag)
+
     if not stream:
+        got = await STATE.acquire_workspace(ws_key, session_id=ag.session_id, holder=holder)
+        if not got:
+            STATE.release_session(ag.session_id, holder)
+            return _err("等待工作区时被取消", 409, code="workspace_cancelled",
+                        session_id=ag.session_id)
         try:
             res = await ag.run(text, model=model, stream=False, mode=mode, attachments=atts)
         finally:
             STATE.release_session(ag.session_id, holder)
+            STATE.release_workspace(ws_key, holder)
         return _json({"ok": not res.error, "result": res.to_dict(), "session_id": ag.session_id})
 
     # SSE 流式
@@ -1566,11 +1818,28 @@ async def api_chat(request: Any) -> Response:
     target_sid = ag.session_id
 
     async def gen():
-        task = asyncio.create_task(
-            ag.run(text, model=model, stream=True, mode=mode, attachments=atts)
-        )
-        yield _sse({"type": "start", "session_id": target_sid})
+        task = None
+        got_ws = False
         try:
+            yield _sse({"type": "start", "session_id": target_sid})
+            # ★ 先排队、再开工：工作区被别人占着时不能直接 ag.run —— 否则两个
+            #   会话同时写同一批文件（实测过：后发的那轮把前一轮写的文件当成
+            #   半成品再改一遍，两边都不收敛）。
+            got_ws = await STATE.acquire_workspace(
+                ws_key, session_id=target_sid, holder=holder,
+                on_state=lambda: STATE._notify_workspace_queue(target_sid),
+            )
+            if not got_ws:
+                # 排队期间被取消（用户点了停止 / 关了会话）：安静收场，不发 result。
+                yield _sse({"type": "workspace.queue", "session_id": target_sid,
+                            "data": {"waiting": False, "cancelled": True}})
+                return
+            # 排到了：告诉界面「轮到你了」，前端据此把「排队中」换成「生成中」。
+            yield _sse({"type": "workspace.queue", "session_id": target_sid,
+                        "data": {"waiting": False, "granted": True}})
+            task = asyncio.create_task(
+                ag.run(text, model=model, stream=True, mode=mode, attachments=atts)
+            )
             while True:
                 if task.done() and queue.empty():
                     break
@@ -1589,6 +1858,12 @@ async def api_chat(request: Any) -> Response:
             # ★ 先释放会话写租约：无论成功、出错还是被中断，都必须还回去，
             #   否则这个会话会被永久判为「有人在写」，之后再也发不出消息。
             STATE.release_session(target_sid, holder)
+            # ★ 工作区租约同样必须还 ：等待中被取消时还没拿到，不能误放别人的锁
+            #   （release_workspace 内部按持有者比对，这里无条件调是安全的）。
+            if got_ws:
+                STATE.release_workspace(ws_key, holder)
+            if task is None:
+                return
             try:
                 res = await task
                 yield _sse({"type": "result", "data": res.to_dict(), "session_id": target_sid})
@@ -1622,6 +1897,10 @@ async def api_chat_stop(request: Any) -> Response:
     if ag is None:
         return _err("没有正在运行的会话", 404)
     ag.cancel()
+    # ★ 排队中的会话还没建 Agent 任务，ag.cancel() 对它无效 —— 它卡在
+    #   acquire_workspace 的 future 上。必须单独把它从队列里撤下来，
+    #   否则用户点了停止，界面还在「排队中」，而且它会一直占着队位。
+    STATE.cancel_workspace_waiter(ag.session_id)
     return _json({"ok": True})
 
 
@@ -2343,6 +2622,41 @@ async def api_stats(request: Any) -> Response:
     return _json(st.overview(session_id=request.query_params.get("session_id") or None))
 
 
+async def api_workspace_lock(request: Any) -> Response:
+    """查某个会话的工作区占用与排队状态。
+
+    ★ 为什么需要一个「拉」的接口，而不是只靠事件推：事件只在状态**变化**时发。
+      用户把界面切到别的对话再切回来时，这一路的排队事件早就发过了 ——
+      没有这个接口，切回来的界面会一直显示「排队中」或干脆什么都不显示，
+      直到服务端下一次状态变化（可能要等前一个回合跑完）。
+    ★ ``running`` 一并给出：前端切回会话时据此决定要不要接回这条流的输出
+      （在跑 = 有内容会来；只排队 = 还没开工）。
+    """
+    if not _auth_ok(request):
+        return _err("未授权", 401)
+    sid = request.query_params.get("session_id") or ""
+    if not sid:
+        return _json({"ok": True, "state": {}})
+    key = STATE.workspace_key(sid)
+    holder = STATE.workspace_busy(key)
+    qs = STATE.workspace_queue_state(sid)
+    # ★ "在跑"用已有状态推导，不新增一份易失的标记：持有会话写租约、且不在
+    #   排队队列里 = 这个会话的回合真的在跑（排队中的会话持有租约但没开工）。
+    #   另起一个 self.running 字段迟早会与真实状态不同步。
+    running = bool(STATE.session_busy(sid)) and not qs.get("waiting")
+    state = {
+        "workspace": key,
+        # 持有者自己的界面不需要看到「被别人占用」的提示
+        "held_by_me": bool(holder) and holder == sid,
+        "busy_by": holder,
+        "busy_by_label": STATE._session_label(holder) if holder else "",
+        "waiting": bool(qs.get("waiting")),
+        "position": int(qs.get("position") or 0),
+        "running": running,
+    }
+    return _json({"ok": True, "state": state})
+
+
 async def api_subagents(request: Any) -> Response:
     if not _auth_ok(request):
         return _err("未授权", 401)
@@ -2584,6 +2898,8 @@ def create_app() -> Starlette:
         # 其他
         Route("/api/stats", api_stats),
         Route("/api/workspace", api_workspace),
+        # 工作区占用/排队状态（界面切回会话时拉一次，不必等下一个事件）
+        Route("/api/workspace-lock", api_workspace_lock),
         # 待发队列持久化（刷新/重开页面后仍能恢复）
         Route("/api/queue", api_queue, methods=["GET", "POST"]),
         # 内置浏览器桥（桌面主进程轮询取指令 / 回填结果，供 AI 工具驱动浏览器）

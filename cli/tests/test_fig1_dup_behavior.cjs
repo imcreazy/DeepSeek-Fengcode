@@ -81,8 +81,11 @@ test('正常的回合：消息数变多时才补发（本轮确实落了库）',
 });
 
 test('新一轮必须复位 _cancelledTurn，否则一次停止会永久禁用补发', () => {
+  // ★ 写法可以是 S.<字段>（全局访问器）或 T.<字段>（显式的会话状态对象）——
+  //   后者是「按会话隔离运行状态」改造后的形态：整轮读写都钉在发起时那个会话上。
+  //   断言只关心「新一轮起点确实复位了这个标记」。
   assert.ok(
-    source.includes('S._cancelledTurn = false;'),
+    /(^|[^a-zA-Z0-9_.])(S|T)\._cancelledTurn\s*=\s*false;/.test(source),
     '新一轮起点必须复位 _cancelledTurn'
   );
 });

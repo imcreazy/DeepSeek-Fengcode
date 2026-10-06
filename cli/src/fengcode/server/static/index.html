@@ -91,6 +91,9 @@
                     <span class="cs-speed" id="cs-speed"></span>
                     <span class="spacer"></span>
                   </div>
+                  <!-- ★ 工作区占用/排队提示：同一目录同时只允许一个对话在写，
+                       后来者在这里看到「谁在用、我排第几」，而不是一脸懵地等。 -->
+                  <div class="ws-lock" id="ws-lock" hidden></div>
                   <div class="attachments" id="atts"></div>
                   <!-- 排队区：执行中继续发的指令列在这里，可取回/删除/插队立即发 -->
                   <div class="composer-queue" id="composer-queue" hidden></div>
