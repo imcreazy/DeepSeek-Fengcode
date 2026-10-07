@@ -389,6 +389,13 @@
 
 **Electron 外壳**（`desktop/`，无业务逻辑）：`main.js` 拉后端、托盘、快捷键、右键菜单、窗口控制。
 
+★★ **外壳日志的硬约束（1.2.26 事故后定的，别改回去）**：`log()` 写 stdout 必须自己兜住异常，崩溃处理器必须防重入。
+踩过的坑：桌面端是用管道拉起的，stdout 一旦断开（EPIPE）写它就**抛异常**；而 `uncaughtException` 处理器又调 `log()` 去记录这个异常 → 「写日志抛错 → 处理器记日志 → 又抛错」**无限递归**，每轮往 `desktop.log` 追加一段堆栈。
+实测后果：日志涨到 **7.7 GB**，主进程与磁盘 IO 被占满，**窗口点不动也关不掉**（后端本身是健康的）。
+三条防线：① `log()` 里 `console.log` 包 `try/catch`；② `logCrash()` 用一次性标记防重入 + 兜底 try；③ 日志轮转（`LOG_MAX_BYTES` 8MB × `LOG_KEEP` 3 份）。
+★ 回归防线：`desktop/tests/test_log_guard.cjs`（从 `main.js` 取真实实现来跑）。
+★ 诊断线索：主进程 CPU 持续 ≈100% 单核而渲染进程/后端接近 0 → 先看 `%APPDATA%\fengcode-desktop\logs\desktop.log` 的大小与末尾内容。
+
 ---
 
 ## 16. 版本号与发布（改完要发版时）

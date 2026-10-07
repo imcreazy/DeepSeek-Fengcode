@@ -72,11 +72,38 @@ const MAX_RESTART = 3;
 const LOG_DIR = path.join(app.getPath("userData"), "logs");
 try { fs.mkdirSync(LOG_DIR, { recursive: true }); } catch {}
 const LOG_FILE = path.join(LOG_DIR, "desktop.log");
+// ★ 日志必须有上限：旧版没有，一旦写入路径出问题就能把磁盘刷爆（实测见过 7.7GB）。
+const LOG_MAX_BYTES = 8 * 1024 * 1024;   // 单文件 8MB
+const LOG_KEEP = 3;                      // 轮转保留份数
+
+let logBytes = 0;
+try { logBytes = fs.statSync(LOG_FILE).size; } catch {}
+
+/** 日志轮转：超上限就把当前文件挪成 .1，旧的依次后移，最后一份丢掉。 */
+function rotateLog() {
+  try {
+    for (let i = LOG_KEEP - 1; i >= 1; i--) {
+      const from = `${LOG_FILE}.${i}`;
+      if (fs.existsSync(from)) fs.renameSync(from, `${LOG_FILE}.${i + 1}`);
+    }
+    fs.renameSync(LOG_FILE, `${LOG_FILE}.1`);
+  } catch {}
+  logBytes = 0;
+}
 
 function log(...args) {
   const line = `[${new Date().toISOString()}] ${args.join(" ")}`;
-  console.log(line);
-  try { fs.appendFileSync(LOG_FILE, line + "\n"); } catch {}
+  // ★★ console.log 必须自己兜住异常（stdout 可能已经断开）。
+  //   为什么：桌面端是用管道拉起的，stdout 一旦断（EPIPE），写它就**抛异常**；
+  //   而 uncaughtException 处理器又调 log() 去记录这个异常 —— 于是
+  //   「写日志抛错 → 处理器记日志 → 又抛错」无限递归，每轮往日志追加一段堆栈。
+  //   实测后果：日志涨到 7.7GB，主进程与磁盘 IO 被占满，窗口点不动也关不掉。
+  try { console.log(line); } catch {}
+  try {
+    if (logBytes >= LOG_MAX_BYTES) rotateLog();
+    fs.appendFileSync(LOG_FILE, line + "\n");
+    logBytes += Buffer.byteLength(line) + 1;
+  } catch {}
 }
 
 // ---------------------------------------------------------------- 工具
@@ -1182,9 +1209,22 @@ if (!gotLock) {
 }
 
 // 崩溃兜底
+// ★★ 必须防重入：处理器里一旦再次抛错，就会被同一个处理器接住 —— 无限递归。
+//   实测踩过：stdout 断开后 console.log 抛 EPIPE，处理器记日志又抛，日志涨到 7.7GB，
+//   主进程与磁盘 IO 被占满，窗口点不动也关不掉。这里用一次性标记 + 兜底 try 兜住。
+let crashLogged = false;
+function logCrash(prefix, e) {
+  if (crashLogged) return;
+  crashLogged = true;
+  try {
+    log(prefix, e && e.stack ? e.stack : String(e));
+  } catch {
+    // 连日志都写不了就彻底放弃，绝不再往上抛
+  }
+}
 process.on("uncaughtException", (e) => {
-  log("未捕获异常：", e && e.stack ? e.stack : String(e));
+  logCrash("未捕获异常：", e);
 });
 process.on("unhandledRejection", (e) => {
-  log("未处理的 Promise 拒绝：", e && e.stack ? e.stack : String(e));
+  logCrash("未处理的 Promise 拒绝：", e);
 });
