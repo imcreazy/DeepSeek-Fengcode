@@ -846,9 +846,19 @@ details.prov-more > summary:hover { color: var(--text); }
 .trash-row .trash-branch { color: var(--text-faint); font-family: monospace; }
 .memo-item .memo-head { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
 .memo-item .memo-title { font-weight: 600; font-size: calc(13px * var(--ui-scale)); }
+/* ★ 头部元信息（创建 / 更新）：弱化、不换行、过长省略，避免把标题挤走 */
+.memo-item .memo-meta {
+  flex: none; font-size: calc(11px * var(--ui-scale)); color: var(--text-faint);
+  white-space: nowrap;
+}
 .memo-item .memo-body {
   font-size: calc(12px * var(--ui-scale)); line-height: 1.7; color: var(--text-soft);
-  white-space: pre-wrap; word-break: break-word;
+  word-break: break-word;
+}
+/* ★★ 默认只显示**一行摘要**（实测反馈：整段铺开时长记忆一条占大半屏）。
+   摘要单独一行、超出省略，鼠标悬停看全文（title 属性）。 */
+.memo-item .memo-line {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 /* ★ 长记忆折叠：默认只显示开头一段，点「展开全文」看完整内容。
    为什么用 <details> 而不是自己写按钮 + JS：
@@ -1641,6 +1651,12 @@ body.resizing #infopanel { transition: none; }
   border: 1px solid var(--border); background: var(--bg); color: var(--text);
 }
 .ask .ask-input:focus { outline: none; border-color: var(--accent); }
+/* ★ 「不回答，你自己决定」：弱化的一行，让决定权交回 AI。
+   为什么不与「提交」并排：两者语义相反（一个作答、一个不作答），
+   并排容易被误点；单独一行 + 幽灵样式，看得清但不会抢手。 */
+.ask .ask-skip { display: flex; margin-top: 7px; }
+.ask .ask-skip .btn { color: var(--text-dim); }
+.ask .ask-skip .btn:hover { color: var(--text); }
 .ask-echo { color: var(--accent); }
 
 /* 待办清单面板：对话区底部、输入框之上 */

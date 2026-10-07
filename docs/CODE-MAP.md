@@ -95,7 +95,7 @@
 | `case "tool_delta"` | 参数生成中的占位 | ★ 事件名是**下划线**，后端 `events.py::Ev.TOOL_DELTA` 必须同名 |
 | `case "usage"` | 刷新读数 | ★ 判据用 `usageSnapshotHasData()`，见 §6 |
 | `case "approval.request"` | 弹审批确认卡 | `showApproval()`，按请求 id 幂等 |
-| `case "ask.user"` | 弹 AI 提问卡 | `showAsk()`，按 id 幂等；★ 与审批卡一样画在**对话流里**，并登记进 `pendingAsks` 以便重建后恢复 |
+| `case "ask.user"` | 弹 AI 提问卡 | `showAsk()`，按 id 幂等；★ 与审批卡一样画在**对话流里**，并登记进 `pendingAsks` 以便重建后恢复。★ 选项为「先选中、可补充、再提交」，另有「不回答，你自己决定」按钮（回填明确说明而非空值） |
 | `case "ask.done"` | 移除提问卡 | `removeAskCard()` |
 | `case "workspace.queue"` | 刷新工作区排队提示 | `renderWsLock()`；SSE 与 WS 两条通道都接 |
 | `case "result"` | 回合收尾 | 渲染定稿文字、回执卡、刷新待办与读数 |
@@ -301,7 +301,7 @@
 |---|---|---|
 | 记忆管理 | `memory/manager.py::MemoryManager` | 分层记忆、召回、重要性/新鲜度 |
 | **记忆注入提示词** | `memory/manager.py::context_block()` | 生成 `<memory>` 块；★ 单条字数与整段预算读配置 `recall_body_chars` / `recall_budget_tokens`（两者要一起调，否则放宽的单条会吃光预算） |
-| 记忆正文展示片段 | `app.js::memoBodyHtml()` | 设置页与记忆页共用；长文给「展开全文」（用 `<details>`，不依赖事件绑定） |
+| 记忆条目正文 | `app.js::memoBodyHtml()` | 设置页与记忆页共用。★ 长记忆外面只留**一行摘要**（优先 `description`），全文整体收进 `<details>`——旧写法把预览放在 details 外面，展开后成了「预览 → 展开全文 → 完整正文」三段；短记忆直接全显 |
 | 向量与相似度 | `memory/embedding.py` | `hashing_embed()` / `cosine()` |
 | **压缩切点** | `memory/summarizer.py::split_for_compaction()` | ★ 配对保护（工具调用与结果不许拆开） |
 | 压缩触发判定 | `memory/summarizer.py::should_compact()` / `detect_trigger()` | ★ 实际触发点是 **16 万 token**（`context_soft_limit_tokens`），不是窗口大小 |

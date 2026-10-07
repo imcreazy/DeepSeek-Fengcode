@@ -4326,8 +4326,11 @@ function showAsk(a) {
     ${a.context ? `<div class="ask-ctx">${esc(a.context)}</div>` : ""}
     ${opts.length ? `<div class="ask-opts" data-multi="${multi ? "1" : ""}">${optHtml}</div>` : ""}
     <div class="ask-free">
-      <input class="ask-input" id="askin-${a.id}" placeholder="${opts.length ? "以上都不合适？直接输入你的答复…" : "输入你的答复…"}">
+      <input class="ask-input" id="askin-${a.id}" placeholder="${opts.length ? "可点上面的选项，也可以在这里补充或直接写你的答复…" : "输入你的答复…"}">
       <button class="btn primary sm" data-ask-send type="button">提交</button>
+    </div>
+    <div class="ask-skip">
+      <button class="btn ghost sm" data-ask-skip type="button" title="跳过这次提问，让 AI 自己拿主意继续做">不回答，你自己决定</button>
     </div>`;
   // ★ 挂进对话流（消息区末尾），不再用右下角浮层。
   const wrap = document.createElement("div");
@@ -4341,37 +4344,66 @@ function showAsk(a) {
     try {
       await api("/api/ask", { method: "POST", body: { id: a.id, answer } });
       removeAskCard(a.id);
-      addMessage("user", `<span class="ask-echo">${esc(String(answer))}</span>`, { raw: true });
+      addMessage("user",
+        `<span class="ask-echo">${esc(String(answer)).replace(/\n/g, "<br>")}</span>`,
+        { raw: true });
     } catch (e) { toast("提交失败：" + e.message, "err"); }
   };
 
-  // 选项：多选时点一下切换选中，再点「提交」；单选时点一下即答
+  // ★ 选项一律「先选中、再提交」（单选也一样）。
+  //   旧写法单选时点一下就直接发出去 —— 用户想「选完再补充两句」做不到，手一抖就发了（实测反馈）。
+  //   现在：点选项只切换选中态，答复在点「提交」时才发；输入框里的补充会与选中的选项一起提交。
   const chosen = new Set();
-  $$(".ask-opt", el).forEach((b) => b.onclick = () => {
-    if (!multi) { submit(b.dataset.opt); return; }
-    const v = b.dataset.opt;
-    if (chosen.has(v)) { chosen.delete(v); b.classList.remove("on"); }
-    else { chosen.add(v); b.classList.add("on"); }
-    const send = $("[data-ask-send]", el);
-    if (send) send.disabled = chosen.size === 0;
-  });
+  const inpEl = $("#askin-" + a.id);
   const sendBtn = $("[data-ask-send]", el);
-  if (sendBtn && multi) sendBtn.disabled = true;
+  const syncSend = () => {
+    if (!sendBtn) return;
+    const typed = inpEl ? inpEl.value.trim() : "";
+    sendBtn.disabled = chosen.size === 0 && !typed;
+  };
+  $$(".ask-opt", el).forEach((b) => b.onclick = () => {
+    const v = b.dataset.opt;
+    if (!multi) {
+      // 单选：再点一次可取消选中
+      const had = chosen.has(v);
+      chosen.clear();
+      $$(".ask-opt", el).forEach((x) => x.classList.remove("on"));
+      if (!had) { chosen.add(v); b.classList.add("on"); }
+    } else if (chosen.has(v)) {
+      chosen.delete(v); b.classList.remove("on");
+    } else {
+      chosen.add(v); b.classList.add("on");
+    }
+    syncSend();
+  });
+  if (sendBtn) sendBtn.disabled = true;
   if (sendBtn) sendBtn.onclick = () => {
-    if (multi) {
-      if (chosen.size) submit(Array.from(chosen).join("、"));
+    const typed = inpEl ? inpEl.value.trim() : "";
+    if (!chosen.size && !typed) {
+      toast("请先选择一个选项，或直接写下你的答复", "");
       return;
     }
-    const inp = $("#askin-" + a.id);
-    const v = inp ? inp.value.trim() : "";
-    if (v) submit(v);
-    else toast("请先选择一个选项或输入答复", "");
+    const picked = Array.from(chosen);
+    // 选项与补充合并成一条答复：选项在前、补充在后，两者 AI 都看得到。
+    const answer = picked.length && typed
+      ? `${picked.join("、")}\n（补充：${typed}）`
+      : (picked.length ? picked.join("、") : typed);
+    submit(answer);
   };
-  const inp = $("#askin-" + a.id);
-  if (inp) inp.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); sendBtn && sendBtn.click(); }
-  });
-  if (inp) inp.focus();
+  // ★「不回答，你自己决定」：把决定权交回 AI，让它按自己的判断继续做，而不是卡在这里。
+  //   回填一句**明确说明**（不是空值）—— 空值在后端会被当成「用户未作答」而中断这一步。
+  const skipBtn = $("[data-ask-skip]", el);
+  if (skipBtn) skipBtn.onclick = () => submit("（这次不回答，你按最合理的方案自行决定并继续）");
+  if (inpEl) {
+    inpEl.addEventListener("input", syncSend);
+    inpEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        if (sendBtn && !sendBtn.disabled) sendBtn.click();
+      }
+    });
+    inpEl.focus();
+  }
   scrollDown();
 }
 
@@ -5068,9 +5100,9 @@ PAGES.memory = async () => {
           <span class="tag">${esc(KIND_LABEL[m.kind] || m.kind)}</span>
           <b style="font-size:13px">${esc(m.title || "(无标题)")}</b>
           <span class="spacer"></span>
-          <span style="font-size:11px;color:var(--text-faint)">重要度 ${(m.importance || 0).toFixed(2)} · 访问 ${m.access_count || 0} 次 · ${ago(m.updated_at)}</span>
+          <span style="font-size:11px;color:var(--text-faint)">创建 ${m.created_at ? fmtTime(m.created_at).slice(0, 10) : "—"} · 更新 ${ago(m.updated_at)} · 重要度 ${(m.importance || 0).toFixed(2)} · 访问 ${m.access_count || 0} 次</span>
         </div>
-        <div style="font-size:12.5px;color:var(--text-soft);white-space:pre-wrap">${memoBodyHtml(m.content, m.id)}</div>
+        <div style="font-size:12.5px;color:var(--text-soft)">${memoBodyHtml(m)}</div>
         <div class="row tight" style="margin-top:7px">
           <button class="btn sm ghost" data-edit="${esc(m.id)}">编辑</button>
           <button class="btn sm ghost" data-pin="${esc(m.id)}" data-v="${m.pinned ? 0 : 1}">${m.pinned ? "取消置顶" : "置顶"}</button>
@@ -5318,23 +5350,37 @@ function topicTag(m) {
   return `<span class="tag" title="同一主题只保留一个活跃值">主题：${esc(k)}</span>`;
 }
 
-/** 记忆正文的展示片段：短的直接全显，长的给「展开全文」。
-    ★ 为什么必须有：旧实现写死 `.slice(0, 400)` —— 既没有省略号也不能展开，
-      看起来就像「这条记忆只存了半截」。
+/** 记忆条目正文：**一行摘要 + 可展开全文**。
+    ★ 为什么默认只显示一行：以前把正文预览直接铺开，长记忆一条占大半屏，
+      翻找和对比都困难。
+    ★★ 为什么「展开全文」不能夹在正文中间（实测反馈：「展开全文四个字直接插在了
+      正文之间」）：旧实现把**预览**放在 `<details>` 外面、把**全文**放在里面 ——
+      展开后就是「预览 → 展开全文 → 完整正文」三段，读起来像正文被截断了一次。
+      现在外面只留一行摘要，全文整个放进 `<details>`，展开后不会与摘要重复。
     ★ 为什么用 <details>：设置中心是搬节点渲染的，自建按钮绑的 onclick 可能失效；
       <details> 是原生折叠，不依赖事件绑定。
     两个渲染路径（设置页 loadMemoryPanel / 记忆页 PAGES.memory）共用它，避免口径分叉。 */
-function memoBodyHtml(content, id) {
-  const text = String(content == null ? "" : content);
-  const SHORT = 220;                  // 这个长度以内直接全显，不必折叠
-  if (text.length <= SHORT) return esc(text);
-  // 折叠时的预览：按整行截，避免把一行切成半截（看着像数据损坏）
-  let cut = text.slice(0, SHORT);
-  const nl = cut.lastIndexOf("\n");
-  if (nl > SHORT * 0.5) cut = cut.slice(0, nl);
-  return `${esc(cut)}…\n`
-    + `<details class="memo-full"><summary>展开全文（共 ${fmtNum(text.length)} 字）</summary>`
-    + `<div class="memo-fulltext" style="white-space:pre-wrap">${esc(text)}</div></details>`;
+function memoBodyHtml(m) {
+  const desc = String((m && m.description) || "").trim();
+  const content = String((m && m.content) || "");
+  const LIMIT = 120;
+  // 短记忆：直接全显，不必折叠、也不必先给一行摘要（否则同一句话显示两遍）
+  if (content.length <= LIMIT) {
+    return `<div class="memo-fulltext" style="white-space:pre-wrap">${esc(content)}</div>`;
+  }
+  // 长记忆：**一行摘要**（优先用 description，它本来就是一句话的钩子）
+  let line = desc;
+  if (!line) {
+    const first = content.split("\n").find((x) => x.trim()) || "";
+    line = first.replace(/^#{1,6}\s*/, "").trim();   // 去掉 Markdown 标题符号
+  }
+  const head = line.length > LIMIT ? line.slice(0, LIMIT) + "…" : line;
+  const lineHtml = head
+    ? `<div class="memo-line" title="${esc(line)}">${esc(head)}</div>`
+    : "";
+  return `${lineHtml}
+    <details class="memo-full"><summary>展开全文（共 ${fmtNum(content.length)} 字）</summary>
+    <div class="memo-fulltext" style="white-space:pre-wrap">${esc(content)}</div></details>`;
 }
 
 async function loadMemoryPanel() {
@@ -5364,11 +5410,12 @@ async function loadMemoryPanel() {
           ${volatilityTag(m)}
           ${topicTag(m)}
           <span class="tag">r${esc(String(m.revision || 1))}</span>
+          <span class="memo-meta">创建 ${m.created_at ? fmtTime(m.created_at).slice(0, 10) : "—"} · 更新 ${ago(m.updated_at)}</span>
           <span class="spacer"></span>
           <button class="btn ghost sm" data-mhist="${esc(m.id)}" title="查看修订历史 / 撤回">历史</button>
           <button class="btn ghost sm" data-mdel="${esc(m.id)}" title="删除这条记忆">${icon("trash", 13)}</button>
         </div>
-        <div class="memo-body">${memoBodyHtml(m.content, m.id)}</div>
+        <div class="memo-body">${memoBodyHtml(m)}</div>
         <div class="memo-hist" id="mh-${esc(m.id)}" style="display:none"></div>
       </div>`).join("")
     : `<div class="memo-empty">还没有记忆。和 AI 说「记住：……」就会出现在这里。</div>`;
