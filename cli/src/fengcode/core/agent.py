@@ -200,6 +200,16 @@ class Agent:
         self._subagent_runner: Any = None
         # 提问通道（由 Server 注入；CLI 可另设）。None = 无交互，ask_user 会直接返回说明。
         self._asker: Any = None
+        # ★ 工作区写租约的「按需获取」通道（由 Server 注入）。
+        #   为什么改成按需：旧实现让**每个回合一开始**就去抢工作区写租约，于是
+        #   同一目录下哪怕只是问一句话、答一段字，也会被排在另一个对话后面 ——
+        #   用户看到的正是「新对话连基础对话都要排队」。
+        #   真正需要互斥的只有「对同一批文件的写入」，所以租约推迟到「本步确实
+        #   要执行写工作区的工具」时才获取（见 _needs_workspace_lease）。
+        #   None = 不设门（CLI 等单实例路径直接放行，行为不变）。
+        self._ws_gate: Any = None
+        # 本回合是否已取得工作区写租约（取到后不再重复取，由 Server 在回合结束时释放）。
+        self._ws_lease_held = False
 
         # 会话
         self.session_id = session_id or new_id("s")
@@ -676,6 +686,8 @@ class Agent:
         self._cancel.clear()
         self._step_count = 0
         self._checklist_done = False
+        # ★ 工作区写租约按回合重置：上一回合拿过、由 Server 释放；新回合重新按需取。
+        self._ws_lease_held = False
         self._budget_notified = set()   # 新回合：阈值提醒重新计数（每档每回合最多一次）
         cfg = self.config
         # ★ 步数上限：**0 = 不限**（默认）。靠下面的「无进展防护」自动收尾。
@@ -961,6 +973,15 @@ class Agent:
             parallel_ok = sum(readonly_flags) >= 2 and not any(
                 self._cancel.is_set() for _ in [0]
             )
+            # ★★ 工作区写租约「按需获取」：本步真有会写工作区的调用时才排队等锁。
+            #   为什么放在这里而不是回合开头：同目录下的两个对话**只有真去写同一批
+            #   文件**时才需要互斥；纯读、纯问答根本不该互相排队。旧实现让每个回合
+            #   从第一步就抢锁，于是「新对话连基础对话都被排队」—— 这就是那个现象
+            #   的根因。取锁期间用户点「不等了」→ 门返回 False，安静收场。
+            if self._needs_workspace_lease(calls):
+                if not await self._ensure_workspace_lease(ctx):
+                    result.stopped = True
+                    break
             results: list[ToolResult | None] = [None] * len(calls)
             if parallel_ok:
                 # 只并发那些「只读」的调用；其余（写）保持原序串行执行
@@ -1363,6 +1384,50 @@ class Agent:
         except Exception:
             return False
         return bool(getattr(tool, "read_only", False)) if tool is not None else False
+
+    def _needs_workspace_lease(self, calls: list[ToolCall]) -> bool:
+        """本步是否有「会改动工作区文件」的调用 —— 只有它才需要排队等写租约。
+
+        ★ 判据（按精确度从高到低）：
+          1. 工具显式声明了 ``touches_workspace``（True/False）→ 以它为准；
+             用于那些「会写、但写的不是工作区文件」的工具（todo / memory 这类
+             只写数据库的），它们不该让整个对话去排队；
+          2. 否则按 ``read_only`` 保守推断：非只读即当作会写。
+        ★ MCP / 插件工具的副作用无法确知 → 一律算写；shell / python_exec 等
+          执行类工具也标了非只读 → 算写（它们确实可能改文件）。
+        宁可多等一次，也不要让两个对话真的同时写同一批文件。
+        """
+        for c in calls or []:
+            name = getattr(c, "name", "") or ""
+            tool = None
+            try:
+                tool = self.registry.get(name)
+            except Exception:
+                tool = None
+            declared = getattr(tool, "touches_workspace", None) if tool is not None else None
+            if declared is True:
+                return True
+            if declared is False:
+                continue
+            if not self._is_readonly_call(c):
+                return True
+        return False
+
+    async def _ensure_workspace_lease(self, ctx: ToolContext) -> bool:
+        """真要写工作区了，在这里按需取锁；返回 False 表示等待期间被取消。
+
+        ★ 已经持有就直接放行（同一回合内只取一次，由 Server 在回合结束时释放）。
+        ★ 没注入门（CLI 等单实例路径）直接放行 —— 行为与改动前一致。
+        """
+        if self._ws_lease_held:
+            return True
+        gate = getattr(self, "_ws_gate", None)
+        if gate is None:
+            return True
+        got = await gate()
+        if got:
+            self._ws_lease_held = True
+        return bool(got)
 
     async def _execute_call(self, call: ToolCall, ctx: ToolContext, sid: str) -> ToolResult:
         """执行一次工具调用（含 MCP 与插件分发）。

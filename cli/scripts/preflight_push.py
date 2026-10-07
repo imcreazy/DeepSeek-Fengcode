@@ -6,8 +6,13 @@ import sys
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-# 自适应定位项目根（本脚本位于 <项目根>/scripts/）
-ROOT = Path(__file__).resolve().parent.parent
+# 项目根。
+# ★★ 必须是「整个工程」而不是 `cli\` —— 要和 push_github.py 的扫描根完全一致。
+#   两者物理上都在 cli\scripts\ 下，但 push 数到 D:\Fengcode（cli/ 与 desktop/ 都要推），
+#   本脚本一度只数到 cli\ → 检查范围比实际推送范围**少一批文件**
+#   （desktop\ + 仓库根 + docs\），那些文件的正文不经过密钥扫描就能被推上去。
+#   实测：改前本脚本报 180 个、push 实际推 201 个；改后两边同为 201。
+ROOT = Path(__file__).resolve().parent.parent.parent
 
 SKIP_DIRS = {
     "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
@@ -22,9 +27,16 @@ SKIP_DIR_SUFFIXES = (".egg-info",)
 SKIP_EXT = {".pyc", ".pyo", ".db", ".db-wal", ".db-shm", ".log", ".zip"}
 # ★★ 密钥与凭证类文件（与 push_github.py / release.py 的规则保持一致）
 SKIP_NAME_PREFIXES = (".env",)
+# ★★ 与 push_github.py 的 SKIP_NAMES 逐项一致（2026-10-06 对齐）。
+#   曾漏掉 7 项（id_dsa / id_ecdsa / .netrc / .pgpass / .npmrc / .pypirc / known_hosts）——
+#   方向是「搬运工挡得更全」，所以那些文件不会被推出去、不构成泄露；
+#   但检查员会把它们当成「待检查文件」去扫内容，而它的正则未必认得出 .netrc 那种
+#   `machine x login y password z` 格式 → 那句「检查通过」的含金量比看上去低。
+#   规则必须逐项对齐，别只对齐扫描根。
 SKIP_NAMES = {
     "config.toml", "credentials", "secrets.toml", "auth.json",
-    "account.json", "tokens.json", "id_rsa", "id_ed25519",
+    "account.json", "tokens.json", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+    ".netrc", ".pgpass", ".npmrc", ".pypirc", "known_hosts",
 }
 SKIP_NAME_SUFFIX_EXTS = {".pem", ".key", ".pfx", ".p12", ".keystore", ".jks", ".ppk"}
 

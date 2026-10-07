@@ -132,6 +132,14 @@ class Tool(abc.ABC):
     dangerous: bool = False
     # 是否可在只读模式下使用
     read_only: bool = False
+    # ★ 本工具是否会**改动工作区里的文件**。
+    #   None = 未声明，由调用方按 read_only 保守推断（非只读即当作会写）；
+    #   False = 明确声明「不碰工作区文件」（只写数据库/状态、或纯界面交互），
+    #           调用方据此不把它算进「需要工作区写租约」的判定。
+    #   为什么需要这个属性：工作区写租约已改为**按需获取**（见 Agent._needs_workspace_lease），
+    #   判据必须精确到「真的动文件」—— 否则模型在一段纯问答里调一次 todo，
+    #   也会让这个对话去排队等别人的锁，等于把刚修好的毛病换个入口再来一次。
+    touches_workspace: bool | None = None
     # 是否需要审批才执行（交给审批门判断时置 False，由危险模式自动判定）
     requires_approval: bool = False
     # 参数 schema（JSON Schema 的 properties 部分）

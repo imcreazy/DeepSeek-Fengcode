@@ -624,6 +624,7 @@ function sessDefaults() {
     queue: [],                 // 该会话的待发队列
     _queueLoaded: false,
     pendingApprovals: {},      // 该会话待确认的审批卡（切会话重建消息流后要放回）
+    pendingAsks: {},           // 该会话未答复的提问卡（同上；提问卡现在也在对话流里）
   };
 }
 const SESS = new Map();
@@ -2362,7 +2363,7 @@ function turnKey(userWrap) {
 function setTurnCollapsed(userWrap, collapsed) {
   let n = userWrap.nextElementSibling;
   while (n && !(n.dataset && n.dataset.userMsg === "1")) {
-    // ★ 待确认卡不参与折叠：它是要用户**立刻处理**的东西，
+    // ★ 待确认卡与提问卡不参与折叠：它们是要用户**立刻处理**的东西，
     //   跟着这一轮收起来等于把请求藏了（服务端还在阻塞等答复）。
     if (!(n.dataset && n.dataset.approval === "1")) {
       n.classList.toggle("turn-hidden", collapsed);
@@ -2508,6 +2509,8 @@ function clearMessages() {
   // ★ 重建后把「仍未答复」的确认卡放回来：它们在消息流里，会被上面这行一起抹掉，
   //   而服务端那次工具调用还在阻塞等答复（旧版卡片在浮层里，不受影响；搬进对话流必须自己恢复）。
   try { restorePendingApprovals(); } catch (e) {}
+  // ★ 提问卡同理：它现在也在对话流里，重建后要放回未答复的那些。
+  try { restorePendingAsks(); } catch (e) {}
   refreshMsgNav();
 }
 
@@ -2633,20 +2636,22 @@ function syncSessionUI(sid) {
 }
 
 /* ---- 工作区占用 / 排队提示 ----
-   后端对同一**目录**同时只让一个对话在写，其余的排队接力（见 app.py 的
-   acquire_workspace）。界面必须把这件事说出来：否则用户只看到「发了没反应」，
-   会以为坏了 —— 实测反馈里「新对话发消息却显示立即发送/取回」正是这种困惑。 */
+   后端对同一**目录**同时只让一个对话在**写**，其余的排队接力（见 app.py 的
+   make_workspace_gate）。界面必须把这件事说出来：否则用户只看到「发了没反应」，
+   会以为坏了。 */
 function renderWsLock(st) {
   const box = $("#ws-lock");
   if (!box) return;
   const waiting = !!(st && st.waiting);
-  // 自己在写、或没有任何占用：不提示（正常状态不需要一行字）
-  const busyOther = !!(st && st.busy_by && !st.held_by_me);
-  if (!waiting && !busyOther) { box.hidden = true; box.innerHTML = ""; return; }
+  // ★★ 只在「真的排在队里等写工作区」时才提示。
+  //   为什么不再提示「别人正在写、我还没轮到」（旧写法的 busyOther 分支）：
+  //   写租约已改为**按需获取** —— 别人在写并不影响我继续提问、继续问答，
+  //   此时弹一条「本工作区正被占用、消息会排队」只会让用户以为「一发消息
+  //   就要排队」（实测反馈的正是这个误解）。真正需要他等的只有 waiting。
+  if (!waiting) { box.hidden = true; box.innerHTML = ""; return; }
   const who = esc((st && st.busy_by_label) || "另一个对话");
-  const txt = waiting
-    ? `本工作区正由 <b>${who}</b> 使用，已排在第 <b>${Number(st.position) || 1}</b> 位，轮到它会自动开始。`
-    : `<b>${who}</b> 正在使用本工作区，消息会排队等它跑完再开始。`;
+  const txt = `本工作区正由 <b>${who}</b> 使用，要写文件得等它跑完 —— `
+    + `已排在第 <b>${Number(st.position) || 1}</b> 位，轮到它会自动开始（纯问答不受影响）。`;
   box.innerHTML = `<span class="wl-ic">${icon("lock", 13)}</span>
     <span class="wl-txt">${txt}</span>
     <span class="blank"></span>
@@ -2654,10 +2659,18 @@ function renderWsLock(st) {
   box.hidden = false;
   const b = $("[data-wl-stop]", box);
   if (b) b.onclick = async () => {
-    try { await api("/api/chat/stop", { method: "POST", body: { session_id: S.sessionId } }); }
-    catch (e) {}
+    // ★ 立刻在本地收起提示：等服务端回执再收会让人以为「点了没反应」。
     renderWsLock(null);
-    try { refreshWsLock(S.sessionId); } catch (e) {}
+    const sid = S.sessionId || "";
+    const cur = sessState(sid);
+    // 与输入区的「停止」同一条路径：先断开本会话的流，再通知后端撤销队位。
+    cur._cancelled = true;
+    cur._cancelledTurn = true;
+    try { if (cur.abort) cur.abort.abort(); } catch (e) {}
+    try { await api("/api/chat/stop", { method: "POST", body: { session_id: sid } }); }
+    catch (e) {}
+    // 撤销后再拉一次真实状态：万一没撤掉，提示会重新出现（而不是骗人地说已取消）。
+    try { refreshWsLock(sid); } catch (e) {}
   };
 }
 
@@ -4024,12 +4037,12 @@ function handleEvent(ev, c) {
     //   旧版本后端发了 ask.user 事件，但前端**没有对应 case**，
     //   界面一片安静 —— 实测「fengcode 好像没有 ask 功能」。
     case "ask.user": {
-      showAsk(d);
+      // ★ 带上归属会话：提问卡活在消息流里，切会话重建后要靠它决定放不放回来。
+      showAsk(Object.assign({}, d, { session_id: own }));
       break;
     }
     case "ask.done": {
-      const el = $("#ask-" + d.id);
-      if (el) el.remove();
+      removeAskCard(d.id);
       break;
     }
     case "subagent.start": {
@@ -4264,6 +4277,14 @@ function handleEvent(ev, c) {
       if (d.message) setStatus("busy", d.message);
       break;
     }
+    // ★ 工作区写租约的排队播报（SSE 通道）。
+    //   为什么必须在这里也接一次：这条事件过去只由 WebSocket 通道处理，
+    //   而 WS 是全局通道、SSE 是本流自己的通道 —— 只走 WS 时，排队状态
+    //   在「刚发出这条流」的界面里可能晚到甚至错过。两个通道都接，按 id 幂等。
+    case "workspace.queue": {
+      if (!own || isCurrentSid(own)) renderWsLock(d);
+      break;
+    }
     case "notify": {
       toast(`${d.title || ""}：${d.message || ""}`, "");
       if (window.Notification && Notification.permission === "granted") {
@@ -4276,8 +4297,18 @@ function handleEvent(ev, c) {
 /** ask_user：AI 主动提问，给出 2~4 个候选，用户点一下即答。
     ★ 这是用户明确要的、「问用户怎么操作然后给选项」。
       后端 AskTool 会 emit `ask.user` 并**阻塞等待**，此处回填 /api/ask 即可让
-      工具拿到答案继续干活。 */
+      工具拿到答案继续干活。
+    ★★ 提问卡现在**画在对话流里**（与审批确认卡一致），不再挂在右下角浮层。
+      为什么改：浮层固定在右下角，会盖住右侧信息栏、不随对话滚动，切走再回来
+      也看不到「当时问过什么」；而提问本身是这段对话的一部分，理应跟着对话流走。 */
 function showAsk(a) {
+  if (!a || !a.id) return;
+  // 同一条提问只留一张卡（SSE 与 WebSocket 两条通道都会送，按 id 幂等）
+  if (document.getElementById("ask-" + a.id)) return;
+  // ★ 登记未答复的提问：卡片活在消息流里，切换会话 / 清空对话会重建 #messages
+  //   把它一起抹掉，而服务端那次提问**仍在阻塞等答复** —— 必须自己记住再放回来。
+  S.pendingAsks = S.pendingAsks || {};
+  S.pendingAsks[a.id] = a;
   const el = document.createElement("div");
   el.className = "ask";
   el.id = "ask-" + a.id;
@@ -4298,13 +4329,18 @@ function showAsk(a) {
       <input class="ask-input" id="askin-${a.id}" placeholder="${opts.length ? "以上都不合适？直接输入你的答复…" : "输入你的答复…"}">
       <button class="btn primary sm" data-ask-send type="button">提交</button>
     </div>`;
-  $("#approvals").appendChild(el);
+  // ★ 挂进对话流（消息区末尾），不再用右下角浮层。
+  const wrap = document.createElement("div");
+  wrap.className = "msg-wrap ask-wrap";
+  wrap.dataset.approval = "1";   // ★ 与审批卡一样：不参与轮次折叠（见 setTurnCollapsed）
+  wrap.appendChild(el);
+  msgBox().appendChild(wrap);
 
   const submit = async (answer) => {
     if (answer == null) return;
     try {
       await api("/api/ask", { method: "POST", body: { id: a.id, answer } });
-      el.remove();
+      removeAskCard(a.id);
       addMessage("user", `<span class="ask-echo">${esc(String(answer))}</span>`, { raw: true });
     } catch (e) { toast("提交失败：" + e.message, "err"); }
   };
@@ -4337,6 +4373,28 @@ function showAsk(a) {
   });
   if (inp) inp.focus();
   scrollDown();
+}
+
+/** 移除某条提问卡（连同未答复登记一起清掉）。 */
+function removeAskCard(id) {
+  const el = document.getElementById("ask-" + id);
+  if (el) {
+    const w = el.closest(".msg-wrap") || el;
+    w.remove();
+  }
+  if (S.pendingAsks) delete S.pendingAsks[id];
+}
+
+/** 重建消息区后把「仍未答复」的提问卡放回来（切换会话 / 清空对话时调用）。
+    ★ 只放回属于**当前会话**的：别的会话的提问跟着它自己那条流。 */
+function restorePendingAsks() {
+  const all = S.pendingAsks || {};
+  for (const id of Object.keys(all)) {
+    if (document.getElementById("ask-" + id)) continue;
+    const a = all[id];
+    if (a.session_id && S.sessionId && a.session_id !== S.sessionId) continue;
+    showAsk(a);
+  }
 }
 
 function showApproval(a) {

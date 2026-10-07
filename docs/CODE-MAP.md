@@ -82,7 +82,7 @@
 | 会话作用域查询 | `paneQ()` / `paneQA()` | 查「本会话」的消息用它们；直接写 `$("#messages …")` 会数进隐藏会话的消息 |
 | 从库里重画历史 | `renderStored()` | 切换会话、重启后走这条；**不经过 `handleEvent`** |
 | 事件总入口 | `handleEvent()` | 流式事件的唯一分发点，见下表 |
-| 清空消息区 | `clearMessages()` | 切会话/新建时调用；会一并恢复未答复的确认卡 |
+| 清空消息区 | `clearMessages()` | 切会话/新建时调用；会一并恢复未答复的审批卡与提问卡 |
 
 ### 3.2 `handleEvent` 里的分支（按事件类型）
 
@@ -95,6 +95,9 @@
 | `case "tool_delta"` | 参数生成中的占位 | ★ 事件名是**下划线**，后端 `events.py::Ev.TOOL_DELTA` 必须同名 |
 | `case "usage"` | 刷新读数 | ★ 判据用 `usageSnapshotHasData()`，见 §6 |
 | `case "approval.request"` | 弹审批确认卡 | `showApproval()`，按请求 id 幂等 |
+| `case "ask.user"` | 弹 AI 提问卡 | `showAsk()`，按 id 幂等；★ 与审批卡一样画在**对话流里**，并登记进 `pendingAsks` 以便重建后恢复 |
+| `case "ask.done"` | 移除提问卡 | `removeAskCard()` |
+| `case "workspace.queue"` | 刷新工作区排队提示 | `renderWsLock()`；SSE 与 WS 两条通道都接 |
 | `case "result"` | 回合收尾 | 渲染定稿文字、回执卡、刷新待办与读数 |
 
 ### 3.3 轮次折叠与工具卡归并
@@ -332,15 +335,17 @@
 | 应用装配 / 路由表 | `server/app.py::create_app()` | 所有 `/api/*` 在这里注册 |
 | **对话接口（SSE）** | `server/app.py::api_chat()` | 订阅事件总线，逐条 `_sse()` 下发 |
 | 会话写租约 | `server/app.py::AppState.acquire_session()` | 同一会话禁止两轮并发写 |
-| **工作区写租约（跨会话）** | `server/app.py::AppState.acquire_workspace()` / `release_workspace()` | ★ 同一**目录**只允许一个对话在写，其余 **FIFO 排队**，前一个跑完直接转交（不靠抢占）；键由 `workspace_key()` 归一化目录得到 |
+| **工作区写租约（跨会话）** | `server/app.py::AppState.acquire_workspace()` / `release_workspace()` / `release_workspace_holder()` | ★ 同一**目录**只允许一个对话在**写**，其余 **FIFO 排队**，前一个跑完直接转交（不靠抢占）；键由 `workspace_key()` 归一化目录得到。★ 租约是**按需获取**的：回合开头不抢，只在真要写工作区时才取（见下条） |
+| **工作区写租约的按需门** | `server/app.py::AppState.make_workspace_gate()` + `core/agent.py::Agent._needs_workspace_lease()` / `_ensure_workspace_lease()` | ★★ 纯问答/纯读**不排队**；只有本步出现「会改工作区文件」的工具调用时才等锁。判据见 `tools/base.py::Tool.touches_workspace`（显式声明，None 时按 `read_only` 保守推断） |
 | 工作区占用/排队状态 | `AppState.workspace_queue_state()` / `workspace_busy()` / `cancel_workspace_waiter()` | 关会话（`drop_agent()`）也会归还锁与队位 |
 | **排队状态查询接口** | `server/app.py::api_workspace_lock()` | `GET /api/workspace-lock`：界面切回会话时**拉**一次（事件只在变化时推） |
 | 审批回填 | `server/app.py::api_approval()` | 界面点按钮后回填 |
 | 审批待确认列表 | `server/app.py::api_pending_approvals()` | |
+| AI 提问回填 | `server/app.py::api_ask()` | 界面点选项/输入答复后回填 `ask_user` 的等待 |
 | WebSocket 事件 | `server/app.py::ws_events()` | ★ 与 SSE 是**两条独立通道**，同一条事件会各送一份 |
 | 静态页面 | `server/app.py::index()` | 托管 `static/index.html` |
 | 指令文件列举 | `server/app.py::api_instruction_files()` | 列出工作区里的约定文件位置 |
-| 排队事件 | `events.py::Ev.WORKSPACE_QUEUE` | 排队状态变化时按**排队者自己的** session_id 下发（只有它的界面收得到） |
+| 排队事件 | `events.py::Ev.WORKSPACE_QUEUE` | 排队状态变化时按**排队者自己的** session_id 下发（只有它的界面收得到）；SSE 与 WS 两条通道都接 |
 
 ---
 

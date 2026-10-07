@@ -565,6 +565,8 @@ def _clip_set(text: str) -> bool:
 
 class NotifyTool(Tool):
     name = "notify"
+    # ★ 不碰工作区文件（只写数据库/状态或纯界面交互）→ 不算进工作区写租约判定
+    touches_workspace = False
     group = "自动化"
     description = "发送系统通知（任务完成、需要用户确认时用）。Windows 用托盘气泡，Linux 用 notify-send。"
     parameters = {

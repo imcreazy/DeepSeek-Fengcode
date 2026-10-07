@@ -20,6 +20,8 @@ from ..base import Tool, ToolContext, ToolResult
 
 class MemoryTool(Tool):
     name = "memory"
+    # ★ 不碰工作区文件（只写数据库/状态或纯界面交互）→ 不算进工作区写租约判定
+    touches_workspace = False
     group = "认知"
     description = (
         "管理长期记忆。action 可为："
@@ -173,6 +175,8 @@ class MemoryTool(Tool):
 
 class TodoTool(Tool):
     name = "todo"
+    # ★ 不碰工作区文件（只写数据库/状态或纯界面交互）→ 不算进工作区写租约判定
+    touches_workspace = False
     group = "认知"
     description = (
         "管理当前会话的任务清单（todo list），让多步任务有据可查。"
@@ -290,6 +294,8 @@ def _task_store(ctx: ToolContext):
 
 class GoalTool(Tool):
     name = "goal"
+    # ★ 不碰工作区文件（只写数据库/状态或纯界面交互）→ 不算进工作区写租约判定
+    touches_workspace = False
     group = "认知"
     description = (
         "管理跨轮次的长期目标。当用户交办一个需要多轮才能完成的大任务时，"
@@ -398,6 +404,8 @@ def _goal_text(g: dict) -> str:
 
 class SkillTool(Tool):
     name = "skill"
+    # ★ 不碰工作区文件（只写数据库/状态或纯界面交互）→ 不算进工作区写租约判定
+    touches_workspace = False
     group = "认知"
     description = (
         "技能管理。action 可为：list（列出全部技能）、load（读取某个技能全文并按其执行）、"
@@ -672,6 +680,8 @@ def _parse_plan_steps(text: str) -> list[dict[str, str]]:
 class AskTool(Tool):
     name = "ask_user"
     group = "认知"
+    # ★ 不碰工作区文件（纯界面交互：问一句、等用户选）→ 不算进工作区写租约判定。
+    touches_workspace = False
     description = (
         "向用户提问以澄清需求（当信息不足、且无法用合理默认值推进时使用）。"
         "提供 2-4 个候选项让用户直接选，比开放式提问更省事。"

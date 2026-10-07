@@ -541,6 +541,53 @@ class AppState:
             self._notify_workspace_queue(session_id)
         return hit
 
+    def release_workspace_holder(self, holder: str) -> None:
+        """按持有者标识释放工作区写租约（调用方不必知道 key）。
+
+        ★ 为什么需要它：租约改成「按需、在回合中途」获取后，key 是在获取那一刻
+          由 Agent 的当前工作目录算出来的；释放时若再算一次，万一目录在中途被
+          改过就找不到那一把锁了 —— 用持有者标识反查最稳。
+        """
+        for key, cur in list(self._ws_writers.items()):
+            if cur.get("holder") == holder:
+                self.release_workspace(key, holder)
+
+    def make_workspace_gate(self, ag: Agent, holder: str, session_id: str):
+        """构造「按需获取工作区写租约」的门，交给 Agent 在真要写工作区时调用。
+
+        ★ 语义（这是本版的关键改动）：一个回合**不再**一开始就抢工作区写租约，
+          而是先自由地跑（读文件、查资料、纯文字问答），只有当某一步真的出现
+          「会写工作区的工具调用」时，才在这里排队等锁。
+          为什么：旧实现让同目录下的每个回合都从第一步开始排队，于是新对话里
+          哪怕只是问一句话也要等另一个对话跑完 —— 用户看到的就是「连基础对话
+          都要排队」，而真正需要互斥的只有「对同一批文件的写入」。
+
+        返回一个 ``async () -> bool``：True = 拿到（或本就不需要），False = 等待
+        期间被取消（用户点停止 / 会话关闭），调用方据此安静收场。
+        """
+
+        async def _gate() -> bool:
+            key = self.workspace_key(ag=ag)
+            got = await self.acquire_workspace(
+                key,
+                session_id=session_id,
+                holder=holder,
+                on_state=lambda: self._notify_workspace_queue(session_id),
+            )
+            if got:
+                # 排到了：告诉界面「轮到你了」，前端据此把「排队中」换成「生成中」。
+                try:
+                    self.bus.emit(
+                        Ev.WORKSPACE_QUEUE,
+                        {"waiting": False, "granted": True},
+                        session_id=session_id,
+                    )
+                except Exception:
+                    pass
+            return bool(got)
+
+        return _gate
+
     # ---- 后台服务 ------------------------------------------------------
     async def startup(self) -> None:
         cfg = self.manager.config
@@ -1795,22 +1842,25 @@ async def api_chat(request: Any) -> Response:
             session_id=ag.session_id,
         )
 
-    # ★ 工作区写租约：同一目录同时只允许一个会话在写，其余排队接力。
+    # ★ 工作区写租约：同一目录同时只允许一个会话在**写**，其余排队接力。
     #   键是**归一化后的目录**：项目改名、重建都还是同一个目录，
     #   而真正互斥的是「对同一批文件的写入」（见 AppState.workspace_key）。
-    ws_key = STATE.workspace_key(ag=ag)
+    #   ★★ 注意（本版改动）：这里**不再**一开始就抢锁 —— 见下方按需门。
+    # ★★★ 工作区写租约改为「按需获取」：把门交给 Agent，只有它某一步真的要执行
+    #   会写工作区的工具时才排队等锁（见 Agent._ensure_workspace_lease）。
+    #   为什么改：旧实现让**每个回合**从第一步就抢锁，于是同一目录下另一个对话
+    #   哪怕只是问一句话、答一段字也会被排队 —— 用户看到的就是「新对话连基础
+    #   对话都不能用，一发就显示排队」。真正需要互斥的只有「对同一批文件的写入」。
+    ag._ws_gate = STATE.make_workspace_gate(ag, holder, ag.session_id)
 
     if not stream:
-        got = await STATE.acquire_workspace(ws_key, session_id=ag.session_id, holder=holder)
-        if not got:
-            STATE.release_session(ag.session_id, holder)
-            return _err("等待工作区时被取消", 409, code="workspace_cancelled",
-                        session_id=ag.session_id)
         try:
             res = await ag.run(text, model=model, stream=False, mode=mode, attachments=atts)
         finally:
             STATE.release_session(ag.session_id, holder)
-            STATE.release_workspace(ws_key, holder)
+            # ★ 按持有者释放：门是中途才取的锁，取没取到只有持有者标识能对上。
+            STATE.release_workspace_holder(holder)
+            ag._ws_gate = None
         return _json({"ok": not res.error, "result": res.to_dict(), "session_id": ag.session_id})
 
     # SSE 流式
@@ -1819,24 +1869,9 @@ async def api_chat(request: Any) -> Response:
 
     async def gen():
         task = None
-        got_ws = False
         try:
             yield _sse({"type": "start", "session_id": target_sid})
-            # ★ 先排队、再开工：工作区被别人占着时不能直接 ag.run —— 否则两个
-            #   会话同时写同一批文件（实测过：后发的那轮把前一轮写的文件当成
-            #   半成品再改一遍，两边都不收敛）。
-            got_ws = await STATE.acquire_workspace(
-                ws_key, session_id=target_sid, holder=holder,
-                on_state=lambda: STATE._notify_workspace_queue(target_sid),
-            )
-            if not got_ws:
-                # 排队期间被取消（用户点了停止 / 关了会话）：安静收场，不发 result。
-                yield _sse({"type": "workspace.queue", "session_id": target_sid,
-                            "data": {"waiting": False, "cancelled": True}})
-                return
-            # 排到了：告诉界面「轮到你了」，前端据此把「排队中」换成「生成中」。
-            yield _sse({"type": "workspace.queue", "session_id": target_sid,
-                        "data": {"waiting": False, "granted": True}})
+            # ★ 不再在回合开头排队：直接开工，写操作到来时才由 Agent 取锁。
             task = asyncio.create_task(
                 ag.run(text, model=model, stream=True, mode=mode, attachments=atts)
             )
@@ -1858,10 +1893,10 @@ async def api_chat(request: Any) -> Response:
             # ★ 先释放会话写租约：无论成功、出错还是被中断，都必须还回去，
             #   否则这个会话会被永久判为「有人在写」，之后再也发不出消息。
             STATE.release_session(target_sid, holder)
-            # ★ 工作区租约同样必须还 ：等待中被取消时还没拿到，不能误放别人的锁
-            #   （release_workspace 内部按持有者比对，这里无条件调是安全的）。
-            if got_ws:
-                STATE.release_workspace(ws_key, holder)
+            # ★ 工作区租约同样必须还：本回合可能中途取过锁，也可能根本没取。
+            #   release_workspace_holder 按持有者反查，取没取到都安全。
+            STATE.release_workspace_holder(holder)
+            ag._ws_gate = None
             if task is None:
                 return
             try:

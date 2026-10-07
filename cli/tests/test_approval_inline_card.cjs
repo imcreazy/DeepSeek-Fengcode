@@ -1,10 +1,10 @@
-/* 审批确认卡改到对话内的防回归（2026-10-05）。
+/* 审批确认卡与 AI 提问卡改到对话内的防回归（2026-10-05，2026-10-07 扩展到提问卡）。
 
-背景：卡片原先挂在右下角固定浮层（#approvals），会盖住右侧信息栏，
-      且不随对话滚动 —— 现改为让权限请求跟着对话流走。
+背景：这两类卡片原先都挂在右下角固定浮层（#approvals），会盖住右侧信息栏，
+      且不随对话滚动 —— 现改为让权限请求与提问都跟着对话流走。
 搬到对话流（#messages）后带来两个新风险，必须锁死：
   ① 切换会话 / 清空对话会重建 #messages，卡片会被一起抹掉，
-     而服务端那次工具调用**仍在阻塞等答复** → 必须能放回来；
+     而服务端那次工具调用 / 提问**仍在阻塞等答复** → 必须能放回来；
   ② 轮次折叠会把它收起来 → 等于把请求藏了。
 */
 const test = require('node:test');
@@ -37,9 +37,20 @@ test('审批卡渲染进对话流，而不是右下角浮层', () => {
     fn.includes('dataset.approval = "1"'),
     '卡片所在 wrap 需要 data-approval 标记，轮次折叠才能跳过它'
   );
-  // ask_user 的提问卡保持原样（用户只要求改审批卡）
-  const askFn = funcBody(appSrc, 'showAsk', 3000);
-  assert.ok(askFn.includes('#approvals'), 'ask_user 提问卡仍走浮层，别顺手改掉没被要求的东西');
+  // ask_user 的提问卡同样搬进对话流（2026-10-07）
+  const askFn = funcBody(appSrc, 'showAsk', 3600);
+  assert.ok(
+    askFn.includes('msgBox().appendChild(wrap)'),
+    '提问卡也必须 append 到 #messages（对话流），不再进 #approvals 浮层'
+  );
+  assert.ok(
+    !/#approvals/.test(askFn.slice(0, askFn.indexOf('msgBox().appendChild'))),
+    '提问卡的渲染路径不得再塞进 #approvals 浮层'
+  );
+  assert.ok(
+    askFn.includes('dataset.approval = "1"'),
+    '提问卡所在 wrap 也要 data-approval 标记，轮次折叠才能跳过它'
+  );
 });
 
 test('切换会话 / 清空对话后，未答复的确认卡会被放回来', () => {

@@ -1586,14 +1586,16 @@ body.resizing #infopanel { transition: none; }
   font-family: "SF Mono", Consolas, monospace;
 }
 
-/* ★ ask_user 的提问卡仍走右下角浮层（#approvals）——
-   用户这次只要求把**审批确认卡**挪进对话流，提问卡保持原样，别顺手改掉没被要求的东西。 */
+/* ★ 提问卡与审批确认卡一样，现在都画在**对话流里**（不再用右下角浮层）。
+   #approvals 保留为空容器以兼容旧引用，但不再承载提问卡。 */
 #approvals { position: fixed; right: 18px; bottom: 18px; z-index: 60; display: flex;
   flex-direction: column; gap: 10px; max-width: 440px; }
 /* 审批确认卡：现为**对话内的一条**（.approval-wrap 里的 .approval），不再用上面的浮层。
    ★ 为什么改：浮层固定在右下角会盖住右侧信息栏，且不随对话滚动 ——
      多张时只能堆在角落，滚走就看不见了。改为跟着对话流走。 */
 .msg-wrap.approval-wrap { margin-bottom: 10px; }
+/* 提问卡同样活在对话流里（.ask-wrap 里的 .ask）。 */
+.msg-wrap.ask-wrap { margin-bottom: 10px; }
 .approval {
   background: var(--bg-elev); border: 1px solid var(--warn); border-radius: 15px;
   padding: 13px 15px; box-shadow: var(--shadow-lg);
