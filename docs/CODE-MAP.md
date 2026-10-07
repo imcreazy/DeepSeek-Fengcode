@@ -95,8 +95,8 @@
 | `case "tool_delta"` | 参数生成中的占位 | ★ 事件名是**下划线**，后端 `events.py::Ev.TOOL_DELTA` 必须同名 |
 | `case "usage"` | 刷新读数 | ★ 判据用 `usageSnapshotHasData()`，见 §6 |
 | `case "approval.request"` | 弹审批确认卡 | `showApproval()`，按请求 id 幂等 |
-| `case "ask.user"` | 弹 AI 提问卡 | `showAsk()`，按 id 幂等；★ 与审批卡一样画在**对话流里**，并登记进 `pendingAsks` 以便重建后恢复。★ 选项为「先选中、可补充、再提交」，另有「不回答，你自己决定」按钮（回填明确说明而非空值） |
-| `case "ask.done"` | 移除提问卡 | `removeAskCard()` |
+| `case "ask.user"` | 弹 AI 提问卡 | `showAsk()`，按 id 幂等；★ 与审批卡一样画在**对话流里**（宽度跟随外层 `.msg-wrap`，不要自带 max-width），并登记进 `pendingAsks` 以便重建后恢复。★ 选项为「先选中、可补充、再提交」；「不回答，你自己决定」是与「提交」同行的实体按钮（回填明确说明而非空值） |
+| `case "ask.done"` | 收尾提问卡 | ★ 已答复的卡**保留成记录**（`freezeAskCard()` 已就地冻结，底部一行「已答复：…」），只清 `pendingAsks` 登记；未冻结的才 `removeAskCard()` |
 | `case "workspace.queue"` | 刷新工作区排队提示 | `renderWsLock()`；SSE 与 WS 两条通道都接 |
 | `case "result"` | 回合收尾 | 渲染定稿文字、回执卡、刷新待办与读数 |
 

@@ -1621,7 +1621,11 @@ body.resizing #infopanel { transition: none; }
 /* ask_user：AI 提问 + 候选项按钮 */
 .ask {
   background: var(--bg-elev); border: 1px solid var(--accent); border-radius: 15px;
-  padding: 13px 15px; box-shadow: var(--shadow-lg); max-width: 620px;
+  padding: 13px 15px; box-shadow: var(--shadow-lg);
+  /* ★★ 宽度必须与对话区**对齐**：外层 .msg-wrap 已限宽（max-width 880px + 左右 24px 内边距），
+     卡片自己再写一个固定 max-width 就会比消息窄一截，看起来像缩在角落里（实测反馈「长度不跟对话对齐」）。
+     这里只保留 100% 跟随外层，不再自带宽度。 */
+  width: 100%; max-width: 100%; box-sizing: border-box;
 }
 .ask .h { font-size: calc(13px * var(--ui-scale)); font-weight: 640; color: var(--accent); margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
 .ask .ask-q { font-size: calc(13.5px * var(--ui-scale)); line-height: 1.65; color: var(--text); }
@@ -1651,12 +1655,30 @@ body.resizing #infopanel { transition: none; }
   border: 1px solid var(--border); background: var(--bg); color: var(--text);
 }
 .ask .ask-input:focus { outline: none; border-color: var(--accent); }
-/* ★ 「不回答，你自己决定」：弱化的一行，让决定权交回 AI。
-   为什么不与「提交」并排：两者语义相反（一个作答、一个不作答），
-   并排容易被误点；单独一行 + 幽灵样式，看得清但不会抢手。 */
-.ask .ask-skip { display: flex; margin-top: 7px; }
-.ask .ask-skip .btn { color: var(--text-dim); }
-.ask .ask-skip .btn:hover { color: var(--text); }
+/* ★★ 「不回答，你自己决定」必须**像按钮**，且与「提交」同一行左右分列。
+   踩过的坑：初版写成单独一行 + ghost 弱化样式，用户根本注意不到（实测反馈「很容易忽略」）。
+   现在：左边一个实底描边按钮（看得见、点得到），右边「提交」，语义相反所以分居两端。 */
+.ask .ask-actions { display: flex; align-items: center; gap: 7px; margin-top: 9px; }
+.ask .ask-skip {
+  flex: none; padding: 6px 12px; border-radius: 10px; cursor: pointer;
+  background: var(--bg-hover); border: 1px solid var(--border-strong); color: var(--text-soft);
+  font-size: calc(12.5px * var(--ui-scale)); transition: .12s;
+}
+.ask .ask-skip:hover { border-color: var(--accent); color: var(--text); background: var(--accent-soft); }
+.ask .ask-actions .spacer { flex: 1 1 auto; }
+/* ★ 已答复后的状态：卡片保留成记录，底部一行「已答复：…」。
+   与「用户自己插的一句话」区分开 —— 它属于这次提问，不是新的一轮发言。 */
+.ask.answered { border-color: var(--border); }
+.ask.answered .h { color: var(--text-soft); }
+.ask .ask-answer {
+  display: flex; align-items: baseline; gap: 8px; margin-top: 10px;
+  padding-top: 9px; border-top: 1px dashed var(--border);
+  font-size: calc(12.5px * var(--ui-scale)); color: var(--text);
+}
+.ask .ask-answer .ask-answer-k {
+  flex: none; font-size: calc(11px * var(--ui-scale)); color: var(--text-dim);
+}
+.ask .ask-answer .ask-answer-v { flex: 1 1 auto; min-width: 0; word-break: break-word; }
 .ask-echo { color: var(--accent); }
 
 /* 待办清单面板：对话区底部、输入框之上 */

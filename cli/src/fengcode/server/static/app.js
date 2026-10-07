@@ -4042,7 +4042,14 @@ function handleEvent(ev, c) {
       break;
     }
     case "ask.done": {
-      removeAskCard(d.id);
+      // ★ 已答复的卡保留成记录（submit 里已就地冻结），这里只清未答复登记。
+      //   若卡片还没冻结（例如答复是从别处回填的），才把它移除。
+      const askEl = document.getElementById("ask-" + d.id);
+      if (askEl && askEl.classList.contains("answered")) {
+        if (S.pendingAsks) delete S.pendingAsks[d.id];
+      } else {
+        removeAskCard(d.id);
+      }
       break;
     }
     case "subagent.start": {
@@ -4327,10 +4334,11 @@ function showAsk(a) {
     ${opts.length ? `<div class="ask-opts" data-multi="${multi ? "1" : ""}">${optHtml}</div>` : ""}
     <div class="ask-free">
       <input class="ask-input" id="askin-${a.id}" placeholder="${opts.length ? "可点上面的选项，也可以在这里补充或直接写你的答复…" : "输入你的答复…"}">
-      <button class="btn primary sm" data-ask-send type="button">提交</button>
     </div>
-    <div class="ask-skip">
-      <button class="btn ghost sm" data-ask-skip type="button" title="跳过这次提问，让 AI 自己拿主意继续做">不回答，你自己决定</button>
+    <div class="ask-actions">
+      <button class="ask-skip" data-ask-skip type="button" title="跳过这次提问，让 AI 自己拿主意继续做">不回答，你自己决定</button>
+      <span class="spacer"></span>
+      <button class="btn primary sm" data-ask-send type="button">提交</button>
     </div>`;
   // ★ 挂进对话流（消息区末尾），不再用右下角浮层。
   const wrap = document.createElement("div");
@@ -4343,10 +4351,13 @@ function showAsk(a) {
     if (answer == null) return;
     try {
       await api("/api/ask", { method: "POST", body: { id: a.id, answer } });
-      removeAskCard(a.id);
-      addMessage("user",
-        `<span class="ask-echo">${esc(String(answer)).replace(/\n/g, "<br>")}</span>`,
-        { raw: true });
+      // ★★ 答复**就地收进卡片底部**，不另发一条用户消息。
+      //   为什么改：旧写法 `addMessage("user", …)` 会把答复当成用户自己插的一句话，
+      //   于是同一件事在对话里出现两遍（卡片一次、用户气泡一次），切会话重放时更乱
+      //   —— 而这段答复本质上属于这次提问，理应留在这张卡里。
+      //   现在：清掉可交互部分，只在卡片底部留下一行「已答复：…」，卡片本身保留成记录。
+      freezeAskCard(el, answer);
+      if (S.pendingAsks) delete S.pendingAsks[a.id];   // 已答复，不再需要恢复
     } catch (e) { toast("提交失败：" + e.message, "err"); }
   };
 
@@ -4405,6 +4416,25 @@ function showAsk(a) {
     inpEl.focus();
   }
   scrollDown();
+}
+
+/** 把提问卡「冻结」成一条已答复记录：去掉可交互部分，底部留一行答复。
+    ★ 为什么不是直接删卡：答复是这次提问的结果，留在对话里才有上下文可读；
+      删掉的话回头翻记录只看到一条孤零零的提问，不知道当时选了什么。 */
+function freezeAskCard(el, answer) {
+  if (!el) return;
+  el.classList.add("answered");
+  const opts = el.querySelector(".ask-opts");
+  const free = el.querySelector(".ask-free");
+  const acts = el.querySelector(".ask-actions");
+  if (opts) opts.remove();
+  if (free) free.remove();
+  if (acts) acts.remove();
+  const echo = document.createElement("div");
+  echo.className = "ask-answer";
+  echo.innerHTML = `<span class="ask-answer-k">已答复</span>`
+    + `<span class="ask-answer-v">${esc(String(answer)).replace(/\n/g, "<br>")}</span>`;
+  el.appendChild(echo);
 }
 
 /** 移除某条提问卡（连同未答复登记一起清掉）。 */
