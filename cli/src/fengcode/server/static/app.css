@@ -933,6 +933,25 @@ textarea.mono { font-family: "SF Mono", Consolas, monospace; font-size: calc(12p
 .switch { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; font-size: calc(12.5px * var(--ui-scale)); user-select: none; }
 .switch input { width: auto; margin: 0; accent-color: var(--accent); }
 
+/* ---- 账号面板（可选账号源）---- */
+/* 已登录态：左边身份、右边余额。余额是主角，字号加大。 */
+.acct-row {
+  display: flex; align-items: center; gap: 16px;
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px;
+  background: var(--bg-hover);
+}
+.acct-who { flex: 1 1 auto; min-width: 0; }
+.acct-name {
+  font-size: calc(14px * var(--ui-scale)); font-weight: 620; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.acct-bal { flex: none; text-align: right; }
+.acct-bal-v {
+  font-size: calc(19px * var(--ui-scale)); font-weight: 680; color: var(--accent);
+  font-variant-numeric: tabular-nums; line-height: 1.25;
+}
+.acct-bal .help, .acct-who .help { font-size: calc(11px * var(--ui-scale)); color: var(--text-faint); margin-top: 2px; }
+
 table { width: 100%; border-collapse: collapse; font-size: calc(12.5px * var(--ui-scale)); }
 th, td { padding: 7px 9px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
 th {

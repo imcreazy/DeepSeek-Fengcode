@@ -582,6 +582,9 @@ const S = {
   // ★ 队列持久化：内存数组刷新即丢，所以每次增删改都同步落盘（见 syncQueue）。
   //   启动时按会话读回来，用户排的队不会因为一次刷新就没了。
   _queueLoaded: false,
+  // ★ 账号（可选账号源）：只存**服务端给的脱敏快照**（用户名/余额/开关），
+  //   凭证从不进前端。未登录时是 { logged_in: false }。
+  account: null,
 };
 
 /* ==========================================================================
@@ -812,6 +815,7 @@ const SETTINGS_NAV = [
   { id: "safety", label: "权限", icon: "shield", desc: "权限等级与细粒度规则", page: "settings", tab: "safety" },
   { id: "sandbox", label: "沙箱", icon: "box", desc: "Shell 解释器、写入范围", page: "settings", tab: "safety" },
   { group: "应用" },
+  { id: "account", label: "账号", icon: "users", desc: "登录后查看账户余额", page: "settings", tab: "account" },
   { id: "advanced", label: "高级", icon: "flask", desc: "服务端口、数据目录、维护", page: "settings", tab: "adv" },
   { id: "about", label: "关于", icon: "info", desc: "版本与更新", page: "about" },
 ];
@@ -1903,6 +1907,18 @@ function renderUsageBreakdown(stats) {
   </div>`;
 }
 
+/** 状态栏的余额项：未登录、或用户关掉了显示时返回空串。
+    ★ 余额来自服务端的**脱敏快照**（界面拿不到凭证），是上次读取到的值，
+      hover 用 title 说明更新于何时，避免把旧值当成实时值。 */
+function accountStatusHtml() {
+  const a = S.account || {};
+  if (!a.logged_in || a.show_balance === false) return "";
+  const cur = esc(a.currency || "");
+  const bal = (a.balance == null) ? "—" : `${a.balance} ${cur}`;
+  const tip = a.updated_at ? `更新于 ${fmtTime(a.updated_at)}` : "尚未读取余额";
+  return `<span class="sb-item" title="${esc(tip)}">余额 <b>${esc(bal)}</b></span>`;
+}
+
 function renderStatusBar() {
   const u = S.turnUsage || {};
   const left = $("#sb-left"), right = $("#sb-right");
@@ -1935,7 +1951,8 @@ function renderStatusBar() {
     `<span class="sb-item">${esc(S.workspace || "默认工作区")}</span>` +
     `<span class="sb-item">本次命中 <b>${hasUsage ? hit + "%" : "—"}</b></span>` +
     `<span class="sb-item">本次输出 <b>${fmtNum(u.completion_tokens || 0)}</b></span>` +
-    `<span class="sb-item">本次费用 <b>${fmtCost(u.cost || 0, u.currency)}</b></span>`;
+    `<span class="sb-item">本次费用 <b>${fmtCost(u.cost || 0, u.currency)}</b></span>` +
+    accountStatusHtml();
   right.innerHTML =
     `<span class="sb-item">${state}</span>` +
     `<span class="sb-item">${elapsed ? fmtDuration(elapsed) : "—"}</span>` +
@@ -2733,6 +2750,8 @@ function openFirstRunWizard() {
     } catch (e) {}
     mask.remove();
     if (!skipped) toast("设置完成，可以开始了", "ok");
+    // ★ 向导关掉之后再问账号 —— 两个弹窗叠在一起会让人不知道该点哪个。
+    maybePromptAccount();
   };
 
   const render = () => {
@@ -6475,6 +6494,7 @@ PAGES.settings = async () => {
       <button class="tab" data-t="safety">权限</button>
       <button class="tab" data-t="memory">记忆</button>
       <button class="tab" data-t="ui">外观</button>
+      <button class="tab" data-t="account">账号</button>
       <button class="tab" data-t="adv">高级</button>
     </div>
     <div id="set-model" class="set-pane">
@@ -6751,6 +6771,23 @@ PAGES.settings = async () => {
           桌面通知（跑完提醒你）</label>
       </div>
     </div>
+    <!-- ★ 账号面板（可选账号源）：登录后在这里看余额。
+         未登录 = 账密框；已登录 = 用户名 + 余额 + 刷新 + 退出。
+         两态由 renderAccountPane() 填充，不在这里写死内容。 -->
+    <div id="set-account" class="set-pane" style="display:none">
+      <div class="card"><h3>账号<span class="hint">可选，不登录也能用</span></h3>
+        <div class="help" style="margin-bottom:10px">
+          登录后可以直接看到账户余额，不用再去网页上看。<br>
+          这只是增强项：不登录同样可以正常使用，自己填模型密钥即可。
+        </div>
+        <div id="acct-box"></div>
+      </div>
+      <div class="card"><h3>显示</h3>
+        <label class="switch"><input type="checkbox" id="acct-show"${(cfg.account || {}).show_balance !== false ? " checked" : ""}>
+          在底部状态栏显示余额</label>
+        <div class="help" style="margin-top:6px">关掉只是不显示，不影响登录状态。</div>
+      </div>
+    </div>
     <div id="set-adv" class="set-pane" style="display:none">
       <div class="card"><h3>服务<span class="hint">本机监听与访问控制</span></h3>
         <div class="grid c3">
@@ -6945,6 +6982,17 @@ PAGES.settings = async () => {
     });
   };
   renderProviders();
+  // 账号面板（两态由 renderAccountPane 填充）
+  renderAccountPane();
+  const showBal = $("#acct-show");
+  if (showBal) showBal.onchange = async () => {
+    try {
+      await api("/api/account", { method: "POST", body: { action: "show_balance", value: showBal.checked } });
+      if (S.account) S.account.show_balance = showBal.checked;
+      renderStatusBar();
+      toast(showBal.checked ? "已显示余额" : "已隐藏余额", "ok");
+    } catch (e) { toast("保存失败：" + e.message, "err"); }
+  };
 
   // 分段按钮（思考语言 / 压缩阈值）：点一个，同组其它取消选中；
   // 压缩那一组还要把值同步进「自定义百分比」输入框。
@@ -7384,6 +7432,165 @@ async function loadRecoveryGlobal() {
   }
   window.__saveSettingsNow = saveSettingsNow;
 };
+
+/* ==========================================================================
+   账号（可选账号源）：登录后在客户端里看余额
+   ---------------------------------------------------------------------
+   ★★ 定位：**可选增强**，不是唯一入口 —— 不登录也能正常用（自己填密钥）。
+   ★★ 凭证从不进前端：界面拿到的只有用户名 / 余额 / 开关（服务端已脱敏）。
+   ★ 渲染与事件都写在**模块级**函数里（只读全局 S 与配置），
+     避免掉进「模块级函数引用外层局部变量」那个坑。
+   ========================================================================== */
+function renderAccountPane() {
+  const box = $("#acct-box");
+  if (!box) return;
+  const a = S.account || { logged_in: false };
+
+  if (!a.logged_in) {
+    box.innerHTML = `
+      <div class="field"><label>账号<span class="hint">邮箱或用户名</span></label>
+        <input type="text" id="acct-user" autocomplete="username" placeholder="登录账号"></div>
+      <div class="field"><label>密码<span class="hint">只用于本次登录</span></label>
+        <input type="password" id="acct-pass" autocomplete="current-password" placeholder="不会保存在本机"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn primary" id="acct-login">登录</button>
+        <span id="acct-msg" style="font-size:12.5px;color:var(--text-dim)"></span>
+      </div>
+      <div class="help" style="margin-top:8px">
+        密码只用于这一次登录，不会写进本机任何文件；登录凭证保存在服务端，界面拿不到。
+      </div>`;
+
+    const btn = $("#acct-login");
+    const doLogin = async () => {
+      const u = ($("#acct-user") || {}).value ? $("#acct-user").value.trim() : "";
+      const p = ($("#acct-pass") || {}).value ? $("#acct-pass").value : "";
+      if (!u || !p) { setText("#acct-msg", "请填写账号与密码"); return; }
+      if (btn) btn.disabled = true;
+      setText("#acct-msg", "登录中…");
+      try {
+        const r = await api("/api/account", {
+          method: "POST",
+          body: { action: "login", username: u, password: p },
+        });
+        if (!r.ok) {
+          setText("#acct-msg", r.error || "登录失败");
+          if (btn) btn.disabled = false;
+          return;
+        }
+        S.account = r.account || { logged_in: true };
+        renderAccountPane();
+        renderStatusBar();
+        toast("已登录", "ok");
+      } catch (e) {
+        setText("#acct-msg", "登录失败：" + e.message);
+        if (btn) btn.disabled = false;
+      }
+    };
+    if (btn) btn.onclick = doLogin;
+    // 回车即登录
+    ["#acct-user", "#acct-pass"].forEach((sel) => {
+      const el = $(sel);
+      if (el) el.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); doLogin(); }
+      });
+    });
+    return;
+  }
+
+  const cur = esc(a.currency || "");
+  const bal = (a.balance == null) ? "—" : `${a.balance} ${cur}`;
+  const usedLine = (a.used == null) ? "" : `<div class="help">已用 ${a.used} ${cur}</div>`;
+  box.innerHTML = `
+    <div class="acct-row">
+      <div class="acct-who">
+        <div class="acct-name">${esc(a.display_name || a.username || "已登录")}</div>
+        <div class="help">${esc(a.username || "")}</div>
+      </div>
+      <div class="acct-bal">
+        <div class="acct-bal-v">${bal}</div>
+        <div class="help">${a.updated_at ? "更新于 " + ago(a.updated_at) : "尚未读取"}</div>
+        ${usedLine}
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button class="btn" id="acct-refresh">刷新余额</button>
+      <button class="btn ghost" id="acct-logout">退出登录</button>
+      <span id="acct-msg" style="font-size:12.5px;color:var(--text-dim)"></span>
+    </div>
+    <div class="help" style="margin-top:8px">
+      余额是上次读取到的值，点「刷新余额」取最新。
+    </div>`;
+
+  const rb = $("#acct-refresh");
+  if (rb) rb.onclick = async () => {
+    rb.disabled = true;
+    setText("#acct-msg", "读取中…");
+    try {
+      const r = await api("/api/account", { method: "POST", body: { action: "refresh" } });
+      if (r.account) S.account = r.account;
+      renderAccountPane();
+      renderStatusBar();
+      if (!r.ok) toast(r.error || "读取失败", "err");
+    } catch (e) {
+      setText("#acct-msg", "读取失败：" + e.message);
+      rb.disabled = false;
+    }
+  };
+  const lb = $("#acct-logout");
+  if (lb) lb.onclick = async () => {
+    if (!confirm("退出登录？退出后不再显示余额，随时可以重新登录。")) return;
+    try {
+      const r = await api("/api/account", { method: "POST", body: { action: "logout" } });
+      S.account = r.account || { logged_in: false };
+    } catch (e) {
+      S.account = { logged_in: false };
+    }
+    renderAccountPane();
+    renderStatusBar();
+    toast("已退出登录", "ok");
+  };
+}
+
+/** 首次进入时问一次「要不要登录看余额」。
+    ★ 只问一次：用户选过（包括选「暂不」）就记下来，之后不再打扰。 */
+function maybePromptAccount() {
+  const a = S.account || {};
+  if (a.logged_in || a.prompt_done) return;
+  if (document.getElementById("acct-prompt")) return;
+  const mask = document.createElement("div");
+  mask.className = "modal-mask show";
+  mask.id = "acct-prompt";
+  mask.innerHTML = `<div class="modal" style="max-width:460px">
+    <h3>要登录账号吗？</h3>
+    <div class="sec-desc">
+      登录后可以在状态栏直接看到账户余额，不用再去网页上看。
+    </div>
+    <div style="border:1px solid var(--border);border-radius:9px;padding:12px 14px;margin:12px 0;font-size:12.5px;line-height:1.9">
+      <div>• 这是可选项，不登录也能正常使用</div>
+      <div>• 密码只用于登录，不会保存在本机</div>
+      <div>• 随时可以在「设置 → 账号」里登录或退出</div>
+    </div>
+    <div class="row" style="justify-content:flex-end;margin-top:14px">
+      <button class="btn ghost" id="acct-no">暂不登录</button>
+      <button class="btn primary" id="acct-yes">去登录</button>
+    </div>
+  </div>`;
+  document.body.appendChild(mask);
+
+  const done = async () => {
+    mask.remove();
+    // 记下「问过了」，下次启动不再弹
+    S.account = Object.assign({}, S.account, { prompt_done: true });
+    try { await api("/api/account", { method: "POST", body: { action: "prompt_done" } }); } catch (e) {}
+  };
+  $("#acct-no").onclick = () => done();
+  $("#acct-yes").onclick = async () => {
+    await done();
+    go("settings");
+    openSetting("account");
+  };
+}
+
 async function providerAdd() {
   // 一个弹窗，两种模式：预设（只填 key） / 自定义（填全部）
   let presets = {};
@@ -7683,6 +7890,9 @@ async function boot() {
   try {
     const d = await api("/api/bootstrap");
     S.boot = d;
+    // ★ 账号（可选账号源）：bootstrap 里带的是**本地快照**（不发网络请求），
+    //   所以首屏不会被外部站点拖慢；要最新余额由用户点「刷新余额」触发。
+    S.account = d.account || { logged_in: false };
     S.model = d.default_model || "";
     if (d.ui && d.ui.theme) applyTheme(d.ui.theme);
     applyFontSize((d.ui && d.ui.font_size) || 17);
@@ -7713,7 +7923,11 @@ async function boot() {
     if (!d.first_run_done) {
       // 首次启动：走一遍轻量向导，
       // 但只问真正影响可用性的三件事，可以随时跳过。
+      // ★ 账号询问排在向导**之后**（在向导的 finish 里触发），避免两个弹窗叠在一起。
       openFirstRunWizard();
+    } else {
+      // 不是首次启动：问一次「要不要登录账号」（只问一次，选过就不再打扰）
+      maybePromptAccount();
     }
     emptyState();
     syncModelSelect();

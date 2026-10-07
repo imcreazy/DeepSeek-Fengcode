@@ -847,8 +847,20 @@ async def api_bootstrap(request: Any) -> Response:
             ],
         },
         "first_run_done": cfg.first_run_done,
+        # 账号（可选账号源）：只带本地快照，不发网络请求 —— 首屏不该被外部站点拖慢
+        "account": _account_snapshot(),
     }
     return _json(data)
+
+
+def _account_snapshot() -> dict[str, Any]:
+    """账号的**本地**快照（不发网络）。任何异常都退回未登录态，不影响首屏。"""
+    try:
+        from ..core.account import get_account
+
+        return get_account().snapshot()
+    except Exception:  # noqa: BLE001
+        return {"logged_in": False}
 
 
 def scrub_provider(p: Any) -> dict[str, Any]:
@@ -935,6 +947,77 @@ async def api_config_raw(request: Any) -> Response:
     except Exception as e:
         return _err(f"写入失败：{e}", 500)
     return _json({"ok": True})
+
+
+# --------------------------------------------------------------------------
+# 路由：账号（可选账号源）
+# --------------------------------------------------------------------------
+
+async def api_account(request: Any) -> Response:
+    """账号相关：本地快照 / 登录 / 登出 / 刷新余额 / 记住"问过了"。
+
+    ★★ 脱敏原则：返回给界面的一律只有身份与余额，
+      **绝不下发**密码、会话刷新凭证、access token。
+      凭证只存在服务端的 ``config/account.json``。
+    ★ 为什么走服务端代理而不是界面直连站点：站点的用户接口不返跨域头
+      （预检有头、真实响应没有），浏览器拿不到数据；顺带也让凭证不出后端。
+    """
+    if not _auth_ok(request):
+        return _err("未授权", 401)
+    from ..core.account import AccountError, get_account
+
+    acc = get_account()
+    if request.method == "GET":
+        # 只读本地：不发网络请求，界面首屏/状态栏用
+        return _json(acc.snapshot())
+
+    body = await _body(request)
+    action = str(body.get("action") or "").strip()
+
+    if action == "login":
+        try:
+            info = await acc.login(
+                str(body.get("username") or ""),
+                str(body.get("password") or ""),
+            )
+        except AccountError as e:
+            return _json({"ok": False, "error": str(e)}, 400)
+        except Exception as e:  # noqa: BLE001
+            return _json({"ok": False, "error": f"登录失败：{e}"}, 400)
+        return _json({"ok": True, "account": info})
+
+    if action == "refresh":
+        try:
+            info = await acc.self()
+        except AccountError as e:
+            # 凭证失效时 AccountError 已把本地清干净，界面据此回到未登录态
+            return _json({"ok": False, "error": str(e), "account": acc.snapshot()}, 400)
+        except Exception as e:  # noqa: BLE001
+            return _json({"ok": False, "error": f"读取失败：{e}"}, 400)
+        return _json({"ok": True, "account": info})
+
+    if action == "logout":
+        await acc.logout()
+        return _json({"ok": True, "account": acc.snapshot()})
+
+    if action == "prompt_done":
+        # 用户对"要不要登录"表过态了（选了否也算）—— 之后不再打扰
+        try:
+            STATE.manager.update({"account": {"prompt_done": True}})
+        except Exception as e:  # noqa: BLE001
+            return _err(f"保存失败：{e}", 400)
+        return _json({"ok": True})
+
+    if action == "show_balance":
+        try:
+            STATE.manager.update(
+                {"account": {"show_balance": bool(body.get("value", True))}}
+            )
+        except Exception as e:  # noqa: BLE001
+            return _err(f"保存失败：{e}", 400)
+        return _json({"ok": True, "account": acc.snapshot()})
+
+    return _err(f"未知操作：{action}")
 
 
 # --------------------------------------------------------------------------
@@ -2895,6 +2978,8 @@ def create_app() -> Starlette:
         # 供应商
         Route("/api/providers", api_providers, methods=["GET", "POST"]),
         Route("/api/providers/test", api_provider_test, methods=["POST"]),
+        # 账号（可选账号源：登录后看余额）
+        Route("/api/account", api_account, methods=["GET", "POST"]),
         # 会话
         Route("/api/sessions", api_sessions, methods=["GET", "POST"]),
         Route("/api/sessions/{sid}", api_session_detail, methods=["GET", "PATCH", "DELETE"]),

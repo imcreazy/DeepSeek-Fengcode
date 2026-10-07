@@ -391,6 +391,23 @@ class AutomationConfig(_Base):
     allow_input_simulation: bool = True
 
 
+class AccountConfig(_Base):
+    """可选账号源：登录后在客户端里直接看到账户余额。
+
+    ★★ 为什么叫「可选」：Fengcode 不登录也能完整使用（自己填供应商密钥）。
+       登录只是**增强**——把余额这类账户信息接进界面，省得再去网页上看。
+       因此这里所有开关都只影响「要不要显示 / 要不要提示」，不影响可用性。
+    """
+
+    # 账号站点地址。默认指向万象；做成可改是为了不把某一家的地址写死在代码里。
+    base_url: str = "https://liufengzi.qd.je"
+    # 首次进入时问过「要不要登录」没有。★ 用户选过「暂不」就不再打扰 ——
+    #   只问一次，之后由用户自己在设置里登录。
+    prompt_done: bool = False
+    # 状态栏是否显示余额（未登录时无论如何都不显示）。
+    show_balance: bool = True
+
+
 class Config(_Base):
     """Fengcode 顶层配置。"""
 
@@ -417,5 +434,6 @@ class Config(_Base):
     server: ServerConfig = Field(default_factory=ServerConfig)
     web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
     automation: AutomationConfig = Field(default_factory=AutomationConfig)
+    account: AccountConfig = Field(default_factory=AccountConfig)
 
     providers: list[Provider] = Field(default_factory=list)
