@@ -182,9 +182,15 @@ class Agent:
         )
         self.sandbox = LocalSandbox(
             cwd=self.workspace,
-            timeout=float(self.config.tools.shell_timeout_seconds),
+            # ★ 默认超时取设置里的「命令最多跑多久」；界面上写的也是这个字段。
+            timeout=float(
+                getattr(self.config.sandbox, "timeout_seconds", 0)
+                or self.config.tools.shell_timeout_seconds
+                or 120
+            ),
             max_output=int(self.config.tools.max_output_chars),
             network=bool(self.config.sandbox.network),
+            bash_mode=str(getattr(self.config.sandbox, "bash", "") or "auto"),
         )
 
         # 工具

@@ -1021,20 +1021,6 @@ async def api_account(request: Any) -> Response:
             return _json({"ok": False, "error": f"读取模型失败：{e}"}, 400)
         return _json({"ok": True, "models": models})
 
-    if action == "logs":
-        try:
-            page = await acc.usage_logs(
-                page=int(body.get("page") or 1),
-                page_size=int(body.get("page_size") or 30),
-                model=str(body.get("model") or ""),
-                days=int(body.get("days") or 0),
-            )
-        except AccountError as e:
-            return _json({"ok": False, "error": str(e)}, 400)
-        except Exception as e:  # noqa: BLE001
-            return _json({"ok": False, "error": f"读取日志失败：{e}"}, 400)
-        return _json({"ok": True, "logs": page})
-
     return _err(f"未知操作：{action}")
 
 
@@ -1802,11 +1788,23 @@ async def api_sandbox_probe(request: Any) -> Response:
     git = which("git")
     wsl = which("wsl")
 
-    # 当前实际会用哪个（与 sandbox 的 bash 策略对齐）
+    # 当前实际会用哪个 —— ★ 必须与 sandbox 的 bash 策略对齐，
+    # 否则界面显示的「当前使用」与实际执行的解释器是两回事（用户改完看不到变化）。
     import platform
+    mode = "auto"
+    try:
+        mode = str(getattr(get_manager().config.sandbox, "bash", "") or "auto")
+    except Exception:
+        pass
     if platform.system() == "Windows":
-        current = pwsh7 or winps or "cmd"
-        current_label = "PowerShell 7" if pwsh7 else ("Windows PowerShell" if winps else "cmd")
+        if mode == "on" and git_bash:
+            current, current_label = git_bash, "Git Bash"
+        elif mode == "off":
+            current = winps or pwsh7 or "cmd"
+            current_label = "Windows PowerShell" if winps else ("PowerShell 7" if pwsh7 else "cmd")
+        else:
+            current = pwsh7 or winps or "cmd"
+            current_label = "PowerShell 7" if pwsh7 else ("Windows PowerShell" if winps else "cmd")
     else:
         current = which("bash") or "/bin/sh"
         current_label = "bash"

@@ -150,16 +150,59 @@ def build_env(extra: dict[str, str] | None = None, *, allow_secrets: bool = Fals
     return env
 
 
-def default_shell() -> tuple[str, list[str]]:
-    """返回 ``(shell 可执行, 前缀参数)``。"""
+def find_bash() -> str | None:
+    """找一个**能可靠执行 Windows 命令**的 bash（通常是 Git for Windows 自带的那个）。
+
+    ★ 为什么排除 system32 / WindowsApps 下的 bash：那是 WSL 的入口，
+      它工作在 Linux 文件系统里，拿 Windows 路径与命令去跑会出错。
+      与 `/api/sandbox-probe` 的口径保持一致（那里也把它们排除了）。
+    """
+    cand = shutil.which("bash")
+    if cand and "system32" not in cand.lower() and "windowsapps" not in cand.lower():
+        return cand
     if is_windows():
-        # 优先 PowerShell 7，其次 Windows PowerShell
-        for cand in ("pwsh", "powershell"):
-            exe = shutil.which(cand)
-            if exe:
-                return exe, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]
+        for p in (
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files\Git\usr\bin\bash.exe",
+            r"C:\Program Files (x86)\Git\bin\bash.exe",
+        ):
+            if os.path.isfile(p):
+                return p
+        return None
+    return cand
+
+
+def default_shell(bash: str = "auto") -> tuple[str, list[str]]:
+    """返回 ``(shell 可执行, 前缀参数)``。
+
+    ★ ``bash`` 来自设置里的「Shell 解释器」：
+      ``auto`` 自动挑（Windows 优先 pwsh）、``on`` 尽量用 bash、``off`` 不用 bash。
+      为什么要有这个参数：设置里一直能选它，但早先没有任何代码读 —— 改了没反应。
+    """
+    mode = (bash or "auto").strip().lower()
+    if mode == "on":
+        exe = find_bash()
+        if exe:
+            return exe, ["-c"]
+    if is_windows():
+        if mode != "off":
+            # auto：优先 PowerShell 7，其次 Windows PowerShell
+            for cand in ("pwsh", "powershell"):
+                exe = shutil.which(cand)
+                if exe:
+                    return exe, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]
+        else:
+            # off：明确不用 bash，但仍要有能执行命令的解释器
+            for cand in ("pwsh", "powershell"):
+                exe = shutil.which(cand)
+                if exe:
+                    return exe, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]
         comspec = os.environ.get("COMSPEC") or "cmd.exe"
         return comspec, ["/d", "/s", "/c"]
+    if mode == "off":
+        exe = shutil.which("sh")
+        if exe:
+            return exe, ["-c"]
     for cand in ("bash", "sh"):
         exe = shutil.which(cand)
         if exe:
@@ -302,6 +345,7 @@ class LocalSandbox:
         max_output: int = 400_000,
         network: bool = True,
         env_extra: dict[str, str] | None = None,
+        bash_mode: str = "auto",
     ) -> None:
         self.cwd = Path(cwd) if cwd else Path(tempfile.gettempdir())
         self.cwd.mkdir(parents=True, exist_ok=True)
@@ -309,6 +353,9 @@ class LocalSandbox:
         self.max_output = int(max_output)
         self.network = bool(network)
         self.env_extra = env_extra or {}
+        # ★ Shell 解释器策略（设置里的「Shell 解释器」）：auto / on / off。
+        #   为什么要存到实例上：设置里一直能选，但早先没接进执行链路 —— 改了没反应。
+        self.bash_mode = str(bash_mode or "auto")
 
     # ---- 通用执行 ------------------------------------------------------
     async def run(
@@ -413,7 +460,7 @@ class LocalSandbox:
         shell_path: tuple[str, list[str]] | None = None,
     ) -> ExecResult:
         """执行一段 Shell 命令。"""
-        exe, prefix = shell_path or default_shell()
+        exe, prefix = shell_path or default_shell(self.bash_mode)
         if os.name == "nt" and Path(exe).name.lower() in ("cmd.exe", "cmd"):
             return await self.run([exe, *prefix, command], timeout=timeout, cwd=cwd, env=env)
         return await self.run([exe, *prefix, command], timeout=timeout, cwd=cwd, env=env)

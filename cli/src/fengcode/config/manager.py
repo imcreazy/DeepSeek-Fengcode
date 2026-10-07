@@ -199,6 +199,11 @@ class ConfigManager:
         ("agent", "max_steps"): (30, "旧默认值会在 30 步硬掐断长任务，已改为不限步数"),
         # ★ 余额显示开关已取消（改为强制显示），把残留的键清掉，别让它继续留在配置里
         ("account", "show_balance"): (True, "余额显示已改为强制开启，开关取消"),
+        # ★ 沙箱的四个摆设字段已删（全仓库没人读），清掉用户配置里的残留
+        ("sandbox", "mode"): ("local", "该字段没有任何代码读，已删除"),
+        ("sandbox", "memory_limit_mb"): (2048, "该字段没有任何代码读，已删除"),
+        ("sandbox", "max_file_write_mb"): (64, "该字段没有任何代码读，已删除"),
+        ("sandbox", "cpu_limit"): (0.0, "该字段没有任何代码读，已删除"),
     }
 
     def _migrate_legacy_defaults(self, data: dict) -> bool:

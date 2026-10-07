@@ -267,13 +267,18 @@ class PermissionsConfig(_Base):
 
 
 class SandboxConfig(_Base):
-    mode: Literal["local", "subprocess", "off"] = "local"
+    """命令执行环境。
+
+    ★ 只保留**真正会被读**的项 —— 曾经还有 mode / memory_limit_mb /
+      max_file_write_mb / cpu_limit 四个字段，但它们全仓库没有任何代码读，
+      摆在那里只会让人以为设了有用（已删）。
+    """
+
     network: bool = True
+    # Shell 解释器：auto=自动挑（Windows 优先 pwsh）、on=尽量用 bash、off=不用 bash。
     bash: Literal["auto", "on", "off"] = "auto"
+    # 单条命令的默认超时（秒）。调用方显式传 timeout 时以调用方为准。
     timeout_seconds: float = 120.0
-    memory_limit_mb: int = 2048
-    max_file_write_mb: int = 64
-    cpu_limit: float = 0.0
 
 
 class McpServerConfig(_Base):

@@ -261,6 +261,8 @@ class AccountManager:
                 "base_url": base,
                 "username": user.get("username") or username,
                 "display_name": user.get("display_name") or "",
+                # ★ 用户自己的分组：建密钥时必须用它（见 ensure_key 的说明）。
+                "group": user.get("group") or "",
                 "refresh_token": refresh,
                 "access_token": data.get("access_token") or "",
                 "access_expires_at": float(data.get("access_expires_at") or (now + 600)),
@@ -396,13 +398,67 @@ class AccountManager:
         return body
 
     async def _usable_groups(self, cli: httpx.AsyncClient, tok: str) -> list[str]:
-        """账号能用哪些分组（建密钥时必须指定一个）。"""
+        """账号能用哪些分组（仅在拿不到账号自身分组时兜底）。"""
         body = await self._get(cli, "/api/user/groups", tok)
         groups = body.get("data") or {}
         names = [g for g in groups if g]
         # ★ 不用 "auto"：它需要额外的自动分组参数，空着建出来的密钥路由不确定。
         real = [g for g in names if g != "auto"]
         return real or names
+
+    async def _account_group(self, cli: httpx.AsyncClient, tok: str) -> str:
+        """账号**自身**的分组。
+
+        ★★ 建密钥必须用它，不能用「可用分组列表的第一个」。
+          踩过的坑：可用分组是按字典序排的，「免费模型」恰好排在最前 ——
+          用它建出来的密钥只能调那 4 个免费模型，而用户账号实际在
+          「通用模型组」里、本来能用全部模型。实测症状：
+          用户在客户端选付费模型，站点回「免费模型下没有可用渠道」。
+        """
+        try:
+            body = await self._get(cli, "/api/user/self", tok)
+        except AccountError:
+            return ""
+        return str((body.get("data") or {}).get("group") or "").strip()
+
+    async def _fix_key_group(self, cli: httpx.AsyncClient, tok: str, mine: dict[str, Any],
+                             want: str) -> str:
+        """把已有密钥的分组纠正到 ``want``，返回纠正后的分组。
+
+        ★ 站点上的「更新密钥」是**整体覆盖**式：只传 group 会把别的字段清掉，
+          所以要把当前值一并带回去。纠正失败不中断流程（密钥本身还能用）。
+        """
+        cur = str(mine.get("group") or "")
+        if not want or not cur or cur == want:
+            return cur
+        kid = int(mine.get("id") or 0)
+        if not kid:
+            return cur
+        payload = {
+            "id": kid,
+            "name": mine.get("name") or "",
+            "status": mine.get("status", 1),
+            "expired_time": mine.get("expired_time", -1),
+            "remain_quota": mine.get("remain_quota", 0),
+            "unlimited_quota": bool(mine.get("unlimited_quota", True)),
+            "model_limits_enabled": bool(mine.get("model_limits_enabled", False)),
+            "model_limits": mine.get("model_limits") or "",
+            "allow_ips": mine.get("allow_ips") or "",
+            "group": want,
+        }
+        base = self._load().get("base_url") or self.base_url()
+        try:
+            resp = await cli.put(
+                f"{base}/api/token/",
+                headers={"Authorization": "Bearer " + tok},
+                json=payload,
+            )
+        except httpx.HTTPError:
+            return cur
+        body = _payload(resp)
+        if not body.get("success"):
+            return cur
+        return str((body.get("data") or {}).get("group") or want)
 
     async def _list_keys(self, cli: httpx.AsyncClient, tok: str) -> list[dict[str, Any]]:
         body = await self._get(cli, "/api/token/", tok, page=1, page_size=100)
@@ -429,17 +485,23 @@ class AccountManager:
                 keys = await self._list_keys(cli, tok)
                 mine = next((k for k in keys if str(k.get("name") or "") == key_name), None)
 
-                if mine is None:
+                # ★★ 建密钥要用**账号自己的分组**（它能用全部模型）。
+                #   拿不到才退回可用分组列表（这时列表第一个可能只是「免费模型」）。
+                want_group = await self._account_group(cli, tok)
+                if not want_group:
                     groups = await self._usable_groups(cli, tok)
                     if not groups:
                         raise AccountError("该账号没有任何可用分组，无法创建密钥")
+                    want_group = groups[0]
+
+                if mine is None:
                     try:
                         resp = await cli.post(
                             f"{base}/api/token/",
                             headers={"Authorization": "Bearer " + tok},
                             json={
                                 "name": key_name,
-                                "group": groups[0],
+                                "group": want_group,
                                 # ★ 密钥本身不限额度：钱从**账号余额**里扣（见方案说明）。
                                 #   设成固定额度会变成「密钥里有钱、账号余额不动」，不是我们要的。
                                 "unlimited_quota": True,
@@ -457,6 +519,13 @@ class AccountManager:
                     mine = next((k for k in keys if str(k.get("name") or "") == key_name), None)
                     if mine is None:
                         raise AccountError("密钥已创建，但未能读回，请稍后重试")
+                else:
+                    # ★ 已有密钥：若分组是旧版建错的（如「免费模型」），顺手纠正过来。
+                    #   不纠正的话，用户选了付费模型会一直报「没有可用渠道」。
+                    fixed = await self._fix_key_group(cli, tok, mine, want_group)
+                    if fixed:
+                        mine = dict(mine)
+                        mine["group"] = fixed
 
                 kid = int(mine.get("id") or 0)
                 if not kid:
@@ -507,50 +576,6 @@ class AccountManager:
             return [str(x) for x in data if x]
         return []
 
-    async def usage_logs(self, *, page: int = 1, page_size: int = 30,
-                         model: str = "", days: int = 0) -> dict[str, Any]:
-        """账号在站点上的调用记录（含其他客户端的用量）。
-
-        ★ 与右侧栏那个「本会话用量」口径不同：这里看的是**整个账号**，
-          所以能回答「我这个账号一共花了多少」。
-        """
-        if not self.logged_in():
-            raise AccountError("请先登录账号")
-        tok = await self._access_token()
-        params: dict[str, Any] = {"page": max(1, int(page)), "page_size": max(1, min(100, int(page_size)))}
-        if model:
-            params["model_name"] = model
-        if days:
-            params["start_timestamp"] = int(time.time()) - days * 86400
-        async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as cli:
-            body = await self._get(cli, "/api/log/self", tok, **params)
-        page_data = body.get("data") or {}
-        items = page_data.get("items") or []
-        cred = self._load()
-        per = int(cred.get("quota_per_unit") or DEFAULT_QUOTA_PER_UNIT) or DEFAULT_QUOTA_PER_UNIT
-        cur = str(cred.get("currency") or DEFAULT_CURRENCY)
-        rows = []
-        for it in items:
-            if not isinstance(it, dict):
-                continue
-            q = it.get("quota")
-            rows.append({
-                "time": it.get("created_at") or 0,
-                "model": it.get("model_name") or "",
-                "tokens_in": it.get("prompt_tokens") or 0,
-                "tokens_out": it.get("completion_tokens") or 0,
-                "cost": (round(float(q) / per, 4) if q is not None else None),
-                "currency": cur,
-                "use_time": it.get("use_time") or 0,
-                "group": it.get("group") or "",
-            })
-        return {
-            "total": page_data.get("total") or 0,
-            "page": page_data.get("page") or page,
-            "page_size": page_data.get("page_size") or page_size,
-            "currency": cur,
-            "items": rows,
-        }
 
 
 

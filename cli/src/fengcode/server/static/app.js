@@ -788,8 +788,7 @@ document.addEventListener("DOMContentLoaded", () => {
 /* ---------------- 设置中心的分类定义 ---------------- */
 const PAGES = {};
 /* 右侧设置页的分组；`page` 指明这一项对应哪个已有页面渲染函数
-   分组顺序偏好设置 / 模型 / 集成与连接 / 能力扩展 /
-   记忆与上下文 / 自动化与开发者 / 安全与控制 / 应用 */
+   分组顺序：偏好设置 / 模型 / 集成与连接 / 能力扩展 / 自动化与开发者 / 安全与控制 / 应用 */
 const SETTINGS_NAV = [
   { group: "偏好设置" },
   { id: "general", label: "通用", icon: "palette", desc: "语言、币种、会话体验" },
@@ -805,15 +804,13 @@ const SETTINGS_NAV = [
   { id: "skills", label: "技能", icon: "bolt", desc: "SKILL.md 与 Python 技能", page: "skills" },
   { id: "subagents", label: "子智能体", icon: "users", desc: "内置预设、并行派生与预算", page: "subagents" },
   { id: "plugins", label: "插件", icon: "puzzle", desc: "扩展工具与钩子", page: "plugins" },
-  { group: "记忆与上下文" },
   { id: "memory", label: "记忆", icon: "brain", desc: "记忆条目、召回设置、指令文件",
     page: "settings", tab: "memory" },
   { group: "自动化与开发者" },
   { id: "jobs", label: "定时任务", icon: "clock", desc: "cron 定时执行", page: "jobs" },
   { id: "audit", label: "审计日志", icon: "clipboard", desc: "操作留痕，密钥已脱敏", page: "audit" },
   { group: "安全与控制" },
-  { id: "safety", label: "权限", icon: "shield", desc: "权限等级与细粒度规则", page: "settings", tab: "safety" },
-  { id: "sandbox", label: "沙箱", icon: "box", desc: "Shell 解释器、写入范围", page: "settings", tab: "safety" },
+  { id: "safety", label: "沙箱和权限", icon: "shield", desc: "权限等级、写入范围与命令执行", page: "settings", tab: "safety" },
   { group: "应用" },
   { id: "account", label: "账号", icon: "users", desc: "登录后查看账户余额", page: "settings", tab: "account" },
   { id: "wxtools", label: "万象实用功能", icon: "sparkles", desc: "签到、模型广场、额度测算等直达入口", page: "settings", tab: "wxtools" },
@@ -1358,17 +1355,19 @@ async function openSetting(id) {
     }
     return;
   }
-  // 非 settings 页（技能 / MCP / 插件等）：同样搬「真实节点」，
-  // 否则复制出来的副本上事件全失效，按钮点了没反应。
+  // 非 settings 页（技能 / MCP / 插件 / 子智能体等）：搬**整页容器**过来。
+  // ★★ 为什么不搬「子节点」（旧写法）：这些页面的按钮回调会调 PAGES.xxx() 重渲染自己，
+  //    而重渲染写的是 #page-xxx —— 若只搬走子节点，#page-xxx 就成了空壳，
+  //    重渲染的内容全进了看不见的地方。实测症状：「插件点停用没反应」、
+  //    「卸载点了列表不变」（界面上那份永远是旧的）。
+  //    搬整页容器则 $() 始终指向用户看得见的那一份。
+  const home = host.parentNode;
   ssHost.replaceChildren();
-  const kids = Array.from(host.childNodes);
-  kids.forEach((n) => {
-    if (n.nodeType === 1) n.style.display = "";
-    ssHost.appendChild(n);
-  });
-  ssHost._movedPane = null;
-  ssHost._movedHome = host;
-  ssHost._movedKids = kids;
+  host.style.display = "";
+  ssHost.appendChild(host);
+  ssHost._movedPane = host;
+  ssHost._movedHome = home;
+  ssHost._movedKids = null;
 }
 
 /** 通用设置（左标题右控件」的排布） */
@@ -2858,7 +2857,7 @@ function emptyState() {
     <div class="big">${icon("sparkle", 36)}</div>
     <div style="font-size:26px;font-weight:650;color:var(--text);margin-bottom:14px">有什么可以帮你？</div>
     <div style="font-size:17px;line-height:1.9">
-      我能读写文件、执行命令、联网搜索、操作数据库、管理长期记忆，忙不过来时还会自己开小号并行干活。<br>
+      我能读写文件、执行命令、联网搜索、操作数据库、管理长期记忆；任务多时会派子智能体并行处理。<br>
       试试：<span class="tag">看一下 D 盘有哪些工程</span>
       <span class="tag">帮我写个脚本统计日志</span>
       <span class="tag">搜一下最新的 xxx 方案</span>
@@ -5632,9 +5631,9 @@ PAGES.subagents = async () => {
     "review": "check", "security-review": "shield", "test": "flask", "plan": "map",
   };
   el.innerHTML = `<div class="card">
-    <h3>内置子智能体（${types.length}）<span class="hint">提示词与工具范围固定，你可以覆盖模型与推理强度</span></h3>
+    <h3>内置子智能体（${types.length}）</h3>
     <div class="help" style="margin-bottom:12px">
-      子智能体是「自己开的小号」：主代理把独立子任务派给它们并行处理，各自有专属工具白名单。
+      主代理把独立子任务派给它们并行处理，各自限定工具范围。
     </div>
     ${renderSubLive(d.live || [])}
     <div style="display:grid;gap:10px">${types.map((t) => `
@@ -6518,16 +6517,13 @@ PAGES.settings = async () => {
       <button class="tab" data-t="adv">高级</button>
     </div>
     <div id="set-model" class="set-pane">
-      <div class="card"><h3>当前用哪个模型</h3>
-        <div class="field"><label>默认模型</label>
+      <div class="card"><h3>默认模型</h3>
+        <div class="field">
           <select id="s-model">${(d.models || []).length
             ? (d.models || []).map((m) =>
               `<option value="${esc(m.ref)}"${m.ref === d.default_model ? " selected" : ""}>
                 ${esc(m.provider_display)} / ${esc(m.model)}${m.has_key ? "" : "（还没填密钥）"}</option>`).join("")
             : `<option value="">还没有可用的模型</option>`}</select></div>
-        <div class="help" style="margin-top:8px">
-          还没有模型？在下面填一个密钥就能用了。
-        </div>
       </div>
       <div class="card"><h3>模型服务（${providers.length}）<span class="hint">填好地址与密钥即可用</span></h3>
         <div id="prov-list"></div>
@@ -6796,19 +6792,10 @@ PAGES.settings = async () => {
          两态由 renderAccountPane() 填充，不在这里写死内容。 -->
     <div id="set-account" class="set-pane" style="display:none">
       <div class="card"><h3>账号<span class="hint">登录后自动绑定万象模型</span></h3>
-        <div class="help" style="margin-bottom:10px">
-          登录后可以直接看到账户余额，并一键把账号能用的模型接进来。<br>
-          不登录也能用 Fengcode —— 自己填供应商密钥即可，只是没有下面这套账号绑定。
-        </div>
         <div id="acct-box"></div>
       </div>
-      <!-- ★ 账号专用：模型绑定。只在登录后可用（要用登录态换来的密钥）。
-           逐模型配置与「模型服务」页共用同一份数据，两边看到的状态永远一致。 -->
       <div class="card"><h3>模型<span class="hint">仅账号登录后可用</span></h3>
-        <div class="help" style="margin-bottom:10px">
-          点「获取模型」会把账号能用的模型拉下来，并自动在站上创建一条密钥（名字见下）。<br>
-          勾选要用的模型；勾上后可单独配上下文窗口、输出上限、是否支持图片。
-        </div>
+        <div class="help" style="margin-bottom:10px">登录后可获取万象全部模型，消耗账号点数。</div>
         <div class="row" style="margin-bottom:10px">
           <button class="btn primary" id="acct-getmodels">获取模型</button>
           <span id="acct-mmsg" style="font-size:12.5px;color:var(--text-dim)"></span>
@@ -6897,7 +6884,7 @@ PAGES.settings = async () => {
           + models.map((m) => modelRowHtml(p, m)).join("")
           : '<div class="help">还没有模型。点「测试并获取模型」拉取，或在「编辑」里手填。</div>'}
         <div class="help" style="margin-top:8px">
-          留空即不限制（交给上游）；灰色的字是内置能力表给出的推荐值，仅供参考、不会自动填入。
+          留空即不限制（交给上游）；<b>单价填了才会算费用</b>，不填一律记 0。
         </div>
       </div>`;
     };
@@ -7440,6 +7427,7 @@ function modelRowHtml(p, m) {
   const ov = (p.model_overrides || {})[m] || {};
   const on = ov.enabled !== false;   // 未显式设置 = 跟随供应商，视为启用
   const supported = (p.models || []).includes(m);
+  const pr = ov.price || {};
   return `<div class="mrow${on ? "" : " off"}" data-pname="${esc(p.name)}" data-mname="${esc(m)}">
     <label class="switch mck">
       <input type="checkbox" data-mon="${esc(p.name)}|${esc(m)}"${on ? " checked" : ""}>
@@ -7457,6 +7445,19 @@ function modelRowHtml(p, m) {
       <label class="mvis" title="这个模型能不能读图">
         <input type="checkbox" data-mf="vision"${ov.vision ? " checked" : ""}>支持图片</label>
     </div>
+    <!-- ★ 单价：填了才会算费用，留空一律显示 0。单位见下方说明。 -->
+    <div class="mfields mprice">
+      <label title="每百万输入 token 多少钱（未命中缓存的部分）">输入价
+        <input type="number" step="0.0001" data-mf="price_input" value="${pr.input != null ? pr.input : ""}"
+          placeholder="如 0.35"></label>
+      <label title="每百万输出 token 多少钱">输出价
+        <input type="number" step="0.0001" data-mf="price_output" value="${pr.output != null ? pr.output : ""}"
+          placeholder="如 1.28"></label>
+      <label title="每百万「命中缓存」的输入 token 多少钱；留空按输入价算">缓存价
+        <input type="number" step="0.0001" data-mf="price_cache" value="${pr.cache_hit != null ? pr.cache_hit : ""}"
+          placeholder="可留空"></label>
+      <span class="mnote">元 / 百万 token</span>
+    </div>
   </div>`;
 }
 
@@ -7466,6 +7467,7 @@ function bindModelRows(root, saveFn) {
   const fieldVal = (el) => (el.type === "checkbox"
     ? el.checked
     : (el.value.trim() === "" ? null : Math.max(0, Math.floor(Number(el.value) || 0))));
+  const priceVal = (el) => (el.value.trim() === "" ? null : Math.max(0, Number(el.value) || 0));
   scope.querySelectorAll("[data-mon]").forEach((el) => el.onchange = () => {
     const [pn, md] = String(el.dataset.mon || "").split("|");
     if (pn && md) saveFn(pn, md, { enabled: el.checked });
@@ -7473,7 +7475,22 @@ function bindModelRows(root, saveFn) {
   scope.querySelectorAll("[data-mf]").forEach((el) => el.onchange = () => {
     const row = el.closest(".mrow");
     if (!row) return;
-    saveFn(row.dataset.pname, row.dataset.mname, { [el.dataset.mf]: fieldVal(el) });
+    const key = String(el.dataset.mf || "");
+    if (key.startsWith("price_")) {
+      // ★ 单价三项必须**一起提交**：后端是整体覆盖式更新，只传一项会把另两项清掉。
+      const inp = $("[data-mf=price_input]", row);
+      const out = $("[data-mf=price_output]", row);
+      const cac = $("[data-mf=price_cache]", row);
+      const vIn = inp ? priceVal(inp) : null;
+      const vOut = out ? priceVal(out) : null;
+      const vCac = cac ? priceVal(cac) : null;
+      const any = vIn != null || vOut != null || vCac != null;
+      // 三项都空 → 传 null 让后端把这条价格删掉，而不是留一条全 0 的空记录
+      saveFn(row.dataset.pname, row.dataset.mname,
+        { price: any ? { input: vIn || 0, output: vOut || 0, cache_hit: vCac || 0 } : null });
+      return;
+    }
+    saveFn(row.dataset.pname, row.dataset.mname, { [key]: fieldVal(el) });
   });
 }
 
@@ -7516,7 +7533,7 @@ function renderAccountModels() {
   const p = provs.find((x) => x.name === pname);
   const models = (p && (p.models || []).length) ? p.models : [];
   if (!p || !models.length) {
-    box.innerHTML = `<div class="help">还没有获取模型。点上面的「获取模型」，会把账号能用的模型拉下来并自动配好密钥。</div>`;
+    box.innerHTML = `<div class="help">点上方「获取模型」拉取。</div>`;
     return;
   }
   box.innerHTML = models.map((m) => modelRowHtml(p, m)).join("");
@@ -7566,21 +7583,10 @@ const WX_LINKS = [
     { label: "模型广场", path: "/pricing", desc: "有哪些模型、单价多少、支持什么能力" },
     { label: "额度测算", path: "/token-calc", desc: "算一笔账：1 点数能换多少 token" },
   ] },
-  { group: "用量与账单", items: [
+  { group: "用量", items: [
     { label: "使用日志", path: "/usage-logs", desc: "每一条调用的时间、模型、tokens、扣费" },
     { label: "命中率统计", path: "/hit-rate", desc: "缓存命中率，越高越省钱" },
     { label: "用量统计", path: "/usage-stats", desc: "按模型看用量分布" },
-    { label: "消费导出", path: "/consumption-export", desc: "把账单导出来对账" },
-  ] },
-  { group: "账号与点数", items: [
-    { label: "我的钱包", path: "/wallet", desc: "余额、充值记录" },
-    { label: "余额提醒", path: "/balance-alert", desc: "余额低时让站点提醒你" },
-    { label: "我的密钥", path: "/keys", desc: "客户端自动建的那条也在这里（名字：见账号页）" },
-    { label: "兑换码", path: "/redemption-codes", desc: "用兑换码充点数" },
-  ] },
-  { group: "邀请与返利", items: [
-    { label: "邀请好友", path: "/affiliate", desc: "邀请码与邀请记录，双方都有奖励" },
-    { label: "用模型返点数", path: "/rebate", desc: "用指定模型会把一部分点数返回来" },
   ] },
   { group: "其它", items: [
     { label: "使用教程", path: "/tutorial", desc: "站点的新手引导" },
@@ -7625,7 +7631,7 @@ function renderAccountPane() {
         <span id="acct-msg" style="font-size:12.5px;color:var(--text-dim)"></span>
       </div>
       <div class="help" style="margin-top:8px">
-        密码只用于这一次登录，不会写进本机任何文件；登录凭证保存在服务端，界面拿不到。
+        密码不落盘，凭证只存服务端。
       </div>`;
 
     const btn = $("#acct-login");
@@ -7688,9 +7694,6 @@ function renderAccountPane() {
       <button class="btn" id="acct-refresh">刷新余额</button>
       <button class="btn ghost" id="acct-logout">退出登录</button>
       <span id="acct-msg" style="font-size:12.5px;color:var(--text-dim)"></span>
-    </div>
-    <div class="help" style="margin-top:8px">
-      余额是上次读取到的值，点「刷新余额」取最新。
     </div>`;
 
   const rb = $("#acct-refresh");
@@ -7741,14 +7744,14 @@ function maybePromptAccount() {
   mask.className = "modal-mask show";
   mask.id = "acct-prompt";
   mask.innerHTML = `<div class="modal" style="max-width:460px">
-    <h3>要登录账号吗？</h3>
+    <h3>登录万象账号？</h3>
     <div class="sec-desc">
-      登录后可以在状态栏直接看到账户余额，不用再去网页上看。
+      登录后可查看账户余额，并获取万象全部模型。
     </div>
     <div style="border:1px solid var(--border);border-radius:9px;padding:12px 14px;margin:12px 0;font-size:12.5px;line-height:1.9">
-      <div>• 这是可选项，不登录也能正常使用</div>
-      <div>• 密码只用于登录，不会保存在本机</div>
-      <div>• 随时可以在「设置 → 账号」里登录或退出</div>
+      <div>• 可选项，不登录也能用</div>
+      <div>• 密码不落盘</div>
+      <div>• 随时可在「设置 → 账号」登录或退出</div>
     </div>
     <div class="row" style="justify-content:flex-end;margin-top:14px">
       <button class="btn ghost" id="acct-no">暂不登录</button>

@@ -23,11 +23,19 @@ def _sandbox(ctx: ToolContext, *, timeout: float | None = None) -> LocalSandbox:
     cfg = ctx.config
     to = timeout
     if to is None:
-        to = float(getattr(getattr(cfg, "tools", None), "shell_timeout_seconds", 120) or 120)
+        # ★ 默认超时取设置里的「命令最多跑多久」（sandbox.timeout_seconds）。
+        #   早先读的是 tools.shell_timeout_seconds，而界面写的是 sandbox 那个 —— 改了没反应。
+        to = float(
+            getattr(getattr(cfg, "sandbox", None), "timeout_seconds", 0)
+            or getattr(getattr(cfg, "tools", None), "shell_timeout_seconds", 120)
+            or 120
+        )
     max_out = int(getattr(getattr(cfg, "tools", None), "max_output_chars", 60_000) or 60_000)
     net = True
+    bash_mode = "auto"
     try:
         net = bool(cfg.sandbox.network)
+        bash_mode = str(getattr(cfg.sandbox, "bash", "") or "auto")
     except Exception:
         pass
     return LocalSandbox(
@@ -35,6 +43,7 @@ def _sandbox(ctx: ToolContext, *, timeout: float | None = None) -> LocalSandbox:
         timeout=to,
         max_output=max_out,
         network=net,
+        bash_mode=bash_mode,
     )
 
 
