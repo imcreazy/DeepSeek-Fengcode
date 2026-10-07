@@ -165,17 +165,23 @@ class AccountManager:
         return out
 
     def prefs(self) -> dict[str, Any]:
-        """界面需要的两个开关（读配置；读不到就给安全默认值）。"""
-        prompt_done, show_balance = False, True
+        """界面需要的账号设置（读配置；读不到就给安全默认值）。"""
+        prompt_done = False
+        provider_name, key_name = "wanxiang-account", "Fengcode 客户端"
         try:
             from ..config.manager import get_manager
 
             cfg = getattr(get_manager().config, "account", None)
             prompt_done = bool(getattr(cfg, "prompt_done", False))
-            show_balance = bool(getattr(cfg, "show_balance", True))
+            provider_name = str(getattr(cfg, "provider_name", "") or provider_name)
+            key_name = str(getattr(cfg, "key_name", "") or key_name)
         except Exception:  # noqa: BLE001
             pass
-        return {"prompt_done": prompt_done, "show_balance": show_balance}
+        return {
+            "prompt_done": prompt_done,
+            "provider_name": provider_name,
+            "key_name": key_name,
+        }
 
     def _public(self, d: dict[str, Any], user: dict[str, Any] | None) -> dict[str, Any]:
         """组装**可下发界面**的字段：只有身份与余额，绝不含任何凭证。"""
@@ -363,6 +369,189 @@ class AccountManager:
                 # 站点没收到也无妨，本地凭证照样清掉
                 pass
         self.clear()
+
+    # ---- 模型绑定 --------------------------------------------------------
+
+    def _pref(self, key: str, default: str) -> str:
+        return str(self.prefs().get(key) or default)
+
+    async def _get(self, cli: httpx.AsyncClient, path: str, tok: str, **params: Any) -> dict[str, Any]:
+        """带登录态 GET，并把站点错误翻成人话。"""
+        d = self._load()
+        base = d.get("base_url") or self.base_url()
+        try:
+            resp = await cli.get(
+                f"{base}{path}",
+                headers={"Authorization": "Bearer " + tok},
+                params=params or None,
+            )
+        except httpx.HTTPError as e:
+            raise AccountError(f"连不上账号站点（{e.__class__.__name__}）") from e
+        body = _payload(resp)
+        if resp.status_code == 401 or body.get("code") == "AUTH_UNAUTHORIZED":
+            self.clear()
+            raise AccountError("登录已过期，请重新登录")
+        if not body.get("success"):
+            raise AccountError(_friendly(body.get("message")))
+        return body
+
+    async def _usable_groups(self, cli: httpx.AsyncClient, tok: str) -> list[str]:
+        """账号能用哪些分组（建密钥时必须指定一个）。"""
+        body = await self._get(cli, "/api/user/groups", tok)
+        groups = body.get("data") or {}
+        names = [g for g in groups if g]
+        # ★ 不用 "auto"：它需要额外的自动分组参数，空着建出来的密钥路由不确定。
+        real = [g for g in names if g != "auto"]
+        return real or names
+
+    async def _list_keys(self, cli: httpx.AsyncClient, tok: str) -> list[dict[str, Any]]:
+        body = await self._get(cli, "/api/token/", tok, page=1, page_size=100)
+        items = ((body.get("data") or {}).get("items")) or []
+        return [it for it in items if isinstance(it, dict)]
+
+    async def ensure_key(self) -> dict[str, Any]:
+        """确保账号下有一条可用的密钥，返回它的明文与站点地址。
+
+        ★ 为什么要「确保」而不是每次新建：站点每用户密钥数量有上限，
+          而且**用户在官网的「密钥」页能看到这些记录** —— 复用一条比堆一串垃圾好。
+        ★ 为什么要多一步查列表：建密钥的接口**只返回成功，不返回 key 也不返回 id**，
+          所以建完必须回查才能拿到 id，再用 id 换取明文。
+        """
+        async with self._lock:
+            if not self.logged_in():
+                raise AccountError("请先登录账号")
+            tok = await self._access_token()
+            key_name = self._pref("key_name", "Fengcode 客户端")
+            d = self._load()
+            base = d.get("base_url") or self.base_url()
+
+            async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as cli:
+                keys = await self._list_keys(cli, tok)
+                mine = next((k for k in keys if str(k.get("name") or "") == key_name), None)
+
+                if mine is None:
+                    groups = await self._usable_groups(cli, tok)
+                    if not groups:
+                        raise AccountError("该账号没有任何可用分组，无法创建密钥")
+                    try:
+                        resp = await cli.post(
+                            f"{base}/api/token/",
+                            headers={"Authorization": "Bearer " + tok},
+                            json={
+                                "name": key_name,
+                                "group": groups[0],
+                                # ★ 密钥本身不限额度：钱从**账号余额**里扣（见方案说明）。
+                                #   设成固定额度会变成「密钥里有钱、账号余额不动」，不是我们要的。
+                                "unlimited_quota": True,
+                                "expired_time": -1,
+                                "remain_quota": 0,
+                            },
+                        )
+                    except httpx.HTTPError as e:
+                        raise AccountError(f"连不上账号站点（{e.__class__.__name__}）") from e
+                    body = _payload(resp)
+                    if not body.get("success"):
+                        raise AccountError(_friendly(body.get("message")))
+                    # 回查拿 id
+                    keys = await self._list_keys(cli, tok)
+                    mine = next((k for k in keys if str(k.get("name") or "") == key_name), None)
+                    if mine is None:
+                        raise AccountError("密钥已创建，但未能读回，请稍后重试")
+
+                kid = int(mine.get("id") or 0)
+                if not kid:
+                    raise AccountError("未能取到密钥编号，请稍后重试")
+                try:
+                    resp = await cli.post(
+                        f"{base}/api/token/{kid}/key",
+                        headers={"Authorization": "Bearer " + tok},
+                    )
+                except httpx.HTTPError as e:
+                    raise AccountError(f"连不上账号站点（{e.__class__.__name__}）") from e
+                body = _payload(resp)
+                if not body.get("success"):
+                    raise AccountError(_friendly(body.get("message")))
+                raw = str((body.get("data") or {}).get("key") or "").strip()
+                if not raw:
+                    raise AccountError("未能取到密钥内容，请稍后重试")
+
+                # 记下 id 与分组，界面据此判断「绑定过了」
+                d = self._load()
+                d["key_id"] = kid
+                d["key_group"] = str(mine.get("group") or "")
+                d["key_ready"] = True
+                self._save(d)
+                return {
+                    "api_key": raw,
+                    "key_id": kid,
+                    "group": d["key_group"],
+                    "base_url": base,
+                }
+
+    async def user_models(self) -> list[str]:
+        """账号能用哪些模型（按可用分组并集，站点已过滤内部模型）。"""
+        if not self.logged_in():
+            raise AccountError("请先登录账号")
+        tok = await self._access_token()
+        async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as cli:
+            body = await self._get(cli, "/api/user/models", tok)
+        data = body.get("data")
+        if isinstance(data, dict):
+            # 兼容「按分组返回」的形状
+            out: list[str] = []
+            for v in data.values():
+                if isinstance(v, list):
+                    out.extend(str(x) for x in v if x)
+            return list(dict.fromkeys(out))
+        if isinstance(data, list):
+            return [str(x) for x in data if x]
+        return []
+
+    async def usage_logs(self, *, page: int = 1, page_size: int = 30,
+                         model: str = "", days: int = 0) -> dict[str, Any]:
+        """账号在站点上的调用记录（含其他客户端的用量）。
+
+        ★ 与右侧栏那个「本会话用量」口径不同：这里看的是**整个账号**，
+          所以能回答「我这个账号一共花了多少」。
+        """
+        if not self.logged_in():
+            raise AccountError("请先登录账号")
+        tok = await self._access_token()
+        params: dict[str, Any] = {"page": max(1, int(page)), "page_size": max(1, min(100, int(page_size)))}
+        if model:
+            params["model_name"] = model
+        if days:
+            params["start_timestamp"] = int(time.time()) - days * 86400
+        async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as cli:
+            body = await self._get(cli, "/api/log/self", tok, **params)
+        page_data = body.get("data") or {}
+        items = page_data.get("items") or []
+        cred = self._load()
+        per = int(cred.get("quota_per_unit") or DEFAULT_QUOTA_PER_UNIT) or DEFAULT_QUOTA_PER_UNIT
+        cur = str(cred.get("currency") or DEFAULT_CURRENCY)
+        rows = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            q = it.get("quota")
+            rows.append({
+                "time": it.get("created_at") or 0,
+                "model": it.get("model_name") or "",
+                "tokens_in": it.get("prompt_tokens") or 0,
+                "tokens_out": it.get("completion_tokens") or 0,
+                "cost": (round(float(q) / per, 4) if q is not None else None),
+                "currency": cur,
+                "use_time": it.get("use_time") or 0,
+                "group": it.get("group") or "",
+            })
+        return {
+            "total": page_data.get("total") or 0,
+            "page": page_data.get("page") or page,
+            "page_size": page_data.get("page_size") or page_size,
+            "currency": cur,
+            "items": rows,
+        }
+
 
 
 _account: AccountManager | None = None

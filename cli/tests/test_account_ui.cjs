@@ -25,13 +25,17 @@ function funcBody(src, name, span = 2400) {
   return src.slice(i, i + span);
 }
 
-test('状态栏余额：未登录或用户关掉时不显示', () => {
-  const fn = funcBody(appSrc, 'accountStatusHtml', 700);
+test('状态栏余额：未登录时不显示，登录后强制显示（无开关）', () => {
+  const fn = funcBody(appSrc, 'accountStatusHtml', 900);
   assert.ok(
-    fn.includes('if (!a.logged_in || a.show_balance === false) return ""'),
-    '未登录、或用户关掉「显示余额」时必须返回空串（不能显示 0 或占位）'
+    fn.includes('if (!a.logged_in) return ""'),
+    '未登录时必须返回空串（不能显示 0 或占位）'
   );
-  assert.ok(fn.includes('余额'), '登录且开启时应给出余额项');
+  assert.ok(
+    !fn.includes('show_balance'),
+    '余额显示已改为强制开启 —— 不应再有 show_balance 开关判断'
+  );
+  assert.ok(fn.includes('余额'), '登录时应给出余额项');
   // 必须真的接进状态栏渲染，否则函数写了也没人调
   const bar = funcBody(appSrc, 'renderStatusBar', 3000);
   assert.ok(bar.includes('accountStatusHtml()'), 'renderStatusBar 必须调用 accountStatusHtml()');

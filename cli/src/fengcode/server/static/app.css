@@ -603,6 +603,14 @@ body.resizing-x, body.resizing-x * { cursor: ew-resize !important; }
   background: var(--bg-elev); padding: 12px 9px; overflow-y: auto;
   overflow-x: hidden;
 }
+/* ★ 设置侧栏的滚动条：平时隐形，滚动时才显现。
+   只动透明度、不动宽度 —— 宽度变化会让滚动时的布局横向抖一下。
+   （滚动类 .scrolling 由 renderSettingsSide 里的 scroll 监听加上，停止 0.9s 后移除。） */
+#settings-side { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+#settings-side.scrolling { scrollbar-color: var(--scrollbar) transparent; }
+#settings-side::-webkit-scrollbar-thumb { background: transparent; border: 2px solid transparent; }
+#settings-side.scrolling::-webkit-scrollbar-thumb { background: var(--scrollbar); border: 2px solid var(--bg); }
+#settings-side.scrolling::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
 /* 「返回工作区」固定在左上角，不随分类列表滚动 */
 #settings-side .ss-back {
   position: sticky; top: 0; z-index: 3;
@@ -951,6 +959,24 @@ textarea.mono { font-family: "SF Mono", Consolas, monospace; font-size: calc(12p
   font-variant-numeric: tabular-nums; line-height: 1.25;
 }
 .acct-bal .help, .acct-who .help { font-size: calc(11px * var(--ui-scale)); color: var(--text-faint); margin-top: 2px; }
+
+/* ---- 万象实用功能：直达入口清单 ---- */
+.wxt-group {
+  font-size: calc(10.5px * var(--ui-scale)); font-weight: 620; color: var(--text-faint);
+  margin: 14px 0 6px; letter-spacing: .3px;
+}
+.wxt-group:first-child { margin-top: 0; }
+.wxt-item {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 9px 12px; margin-bottom: 6px; border-radius: 11px;
+  border: 1px solid var(--border); background: var(--bg-hover);
+  text-decoration: none; color: var(--text); transition: .12s;
+}
+.wxt-item:hover { border-color: var(--accent); background: var(--accent-soft); }
+.wxt-label { flex: none; font-size: calc(13px * var(--ui-scale)); font-weight: 560; }
+.wxt-desc {
+  flex: 1 1 auto; min-width: 0; font-size: calc(11.5px * var(--ui-scale)); color: var(--text-dim);
+}
 
 table { width: 100%; border-collapse: collapse; font-size: calc(12.5px * var(--ui-scale)); }
 th, td { padding: 7px 9px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }

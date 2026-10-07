@@ -1008,16 +1008,124 @@ async def api_account(request: Any) -> Response:
             return _err(f"保存失败：{e}", 400)
         return _json({"ok": True})
 
-    if action == "show_balance":
+    if action == "bind":
+        # 一键绑定：确保账号下有一条密钥，并写进「万象账号」供应商，随后返回可用模型
+        return await _account_bind(acc, body)
+
+    if action == "models":
         try:
-            STATE.manager.update(
-                {"account": {"show_balance": bool(body.get("value", True))}}
-            )
+            models = await acc.user_models()
+        except AccountError as e:
+            return _json({"ok": False, "error": str(e), "account": acc.snapshot()}, 400)
         except Exception as e:  # noqa: BLE001
-            return _err(f"保存失败：{e}", 400)
-        return _json({"ok": True, "account": acc.snapshot()})
+            return _json({"ok": False, "error": f"读取模型失败：{e}"}, 400)
+        return _json({"ok": True, "models": models})
+
+    if action == "logs":
+        try:
+            page = await acc.usage_logs(
+                page=int(body.get("page") or 1),
+                page_size=int(body.get("page_size") or 30),
+                model=str(body.get("model") or ""),
+                days=int(body.get("days") or 0),
+            )
+        except AccountError as e:
+            return _json({"ok": False, "error": str(e)}, 400)
+        except Exception as e:  # noqa: BLE001
+            return _json({"ok": False, "error": f"读取日志失败：{e}"}, 400)
+        return _json({"ok": True, "logs": page})
 
     return _err(f"未知操作：{action}")
+
+
+async def _account_bind(acc: Any, body: dict[str, Any]) -> Response:
+    """账号绑定：建（或复用）密钥 → 写进供应商 → 返回可用模型。
+
+    ★★ 这条链路只在「账号」页提供：它要用登录态换来的密钥，
+      没有登录态就没有密钥可绑，所以不登录时直接拒绝。
+    ★ 写进的是**单独的**供应商（默认 ``wanxiang-account``），
+      不动用户自己手填的「万象 API」预设 —— 免得覆盖人家的密钥。
+    ★ 供应商的模型列表**只放用户勾选启用的**；没勾选的不写进去。
+    """
+    from ..core.account import AccountError
+
+    if not acc.logged_in():
+        return _json({"ok": False, "error": "请先登录账号"}, 400)
+    try:
+        got = await acc.ensure_key()
+    except AccountError as e:
+        return _json({"ok": False, "error": str(e), "account": acc.snapshot()}, 400)
+    except Exception as e:  # noqa: BLE001
+        return _json({"ok": False, "error": f"绑定失败：{e}"}, 400)
+
+    try:
+        models = await acc.user_models()
+    except Exception:  # noqa: BLE001
+        models = []
+
+    prefs = acc.prefs()
+    pname = str(prefs.get("provider_name") or "wanxiang-account")
+    enabled = [str(m) for m in (body.get("enabled") or []) if str(m).strip()]
+    mgr = STATE.manager
+
+    # 站点地址要去掉结尾的 /v1，供应商的 base_url 由它自己拼
+    base = str(got.get("base_url") or "").rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3]
+
+    from ..config.catalog import presets as _presets
+
+    preset = _presets().get("wanxiang") or {}
+    prov = mgr.get_provider(pname)
+    patch: dict[str, Any] = {
+        "name": pname,
+        "kind": "openai",
+        "display_name": "万象账号",
+        "base_url": base,
+        "models_url": f"{base}/v1/models",
+        "api_key": got["api_key"],
+        "enabled": True,
+    }
+    # 思考参数必须带上，否则模型完全不思考（见 catalog 里万象预设的说明）
+    for k in ("default_effort", "effort_style"):
+        if preset.get(k):
+            patch[k] = preset[k]
+    if preset.get("effort_style"):
+        patch.setdefault("extra", {})["effort_style"] = preset["effort_style"]
+    if models:
+        patch["models"] = enabled or models
+        patch["default"] = (enabled or models)[0]
+
+    try:
+        if prov is None:
+            mgr.add_provider(
+                pname,
+                kind="openai",
+                base_url=base,
+                api_key=got["api_key"],
+                models=enabled or models,
+                default=(enabled or models)[0] if (enabled or models) else None,
+                enabled=True,
+            )
+            prov = mgr.get_provider(pname)
+        if prov is not None:
+            data = prov.model_dump(exclude_none=False)
+            data.update(patch)
+            from ..config.schema import Provider as _Provider
+
+            mgr.upsert_provider(_Provider(**data))
+    except Exception as e:  # noqa: BLE001
+        return _json({"ok": False, "error": f"写入供应商失败：{e}"}, 400)
+
+    _reload_runtime()
+    return _json({
+        "ok": True,
+        "provider": pname,
+        "models": models,
+        "enabled": enabled,
+        "group": got.get("group") or "",
+        "account": acc.snapshot(),
+    })
 
 
 # --------------------------------------------------------------------------

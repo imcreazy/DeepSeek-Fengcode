@@ -197,6 +197,8 @@ class ConfigManager:
         # (配置段, 字段) -> (旧默认值, 为什么要迁移)
         ("llm", "max_tokens"): (8192, "旧默认值会把输出截断在 8192，已改为不限制"),
         ("agent", "max_steps"): (30, "旧默认值会在 30 步硬掐断长任务，已改为不限步数"),
+        # ★ 余额显示开关已取消（改为强制显示），把残留的键清掉，别让它继续留在配置里
+        ("account", "show_balance"): (True, "余额显示已改为强制开启，开关取消"),
     }
 
     def _migrate_legacy_defaults(self, data: dict) -> bool:

@@ -346,9 +346,11 @@
 | 静态页面 | `server/app.py::index()` | 托管 `static/index.html` |
 | 指令文件列举 | `server/app.py::api_instruction_files()` | 列出工作区里的约定文件位置 |
 | 排队事件 | `events.py::Ev.WORKSPACE_QUEUE` | 排队状态变化时按**排队者自己的** session_id 下发（只有它的界面收得到）；SSE 与 WS 两条通道都接 |
-| **账号代理接口** | `server/app.py::api_account()` | `GET /api/account` 取本地快照（不发网络）；`POST` 的 `action` 为 `login` / `refresh` / `logout` / `prompt_done` / `show_balance`。★ 走服务端代理的原因：站点的用户接口不返跨域头（**预检有头、真实响应没有**），界面直连拿不到数据；顺带让凭证不出后端 |
+| **账号代理接口** | `server/app.py::api_account()` | `GET /api/account` 取本地快照（不发网络）；`POST` 的 `action` 为 `login` / `refresh` / `logout` / `prompt_done` / `bind` / `models` / `logs`。★ 走服务端代理的原因：站点的用户接口不返跨域头（**预检有头、真实响应没有**），界面直连拿不到数据；顺带让凭证不出后端 |
+| **账号绑定（一键接入模型）** | `server/app.py::_account_bind()` | 未登录直接拒绝 → `ensure_key()` 拿密钥 → `user_models()` 取模型 → 写进**单独一条**「万象账号」供应商（默认 `wanxiang-account`，**不碰**用户手填的万象预设）→ 带思考参数 → 只写用户勾选启用的模型 |
 | **账号首屏快照** | `server/app.py::_account_snapshot()` | 供 `/api/bootstrap` 的 `account` 字段；只读本地、任何异常退回未登录，不拖慢首屏 |
-| **账号核心** | `core/account.py::AccountManager` | `login()` / `self()` / `logout()` / `snapshot()`；凭证存 `config/account.json`（仅服务端可读），密码不落盘，存 30 天 refresh 凭证并按需换 15 分钟的 access token |
+| **账号核心** | `core/account.py::AccountManager` | `login()` / `self()` / `logout()` / `snapshot()` / `ensure_key()` / `user_models()` / `usage_logs()`；凭证存 `config/account.json`（仅服务端可读），密码不落盘，存 30 天 refresh 凭证并按需换 15 分钟的 access token |
+| **确保密钥** | `core/account.py::AccountManager.ensure_key()` | 先按名字复用已有密钥，没有才建；★ 建完**必须回查列表**才能拿 id（建密钥接口只返成功、不返 key 也不返 id），再凭 id 换取明文；设 `unlimited_quota=True` 使钱从**账号余额**扣 |
 
 ---
 
@@ -361,7 +363,7 @@
 | 默认配置 | `config/manager.py::default_config()` | |
 | 从 .env 导入 | `config/manager.py::parse_env_file()` | |
 | **记忆召回上限** | `config/schema.py::MemoryConfig` 的 `recall_body_chars` / `recall_budget_tokens` | 单条注入字数（默认 1200）与整段 token 预算（默认 3200）；★ 两者必须一起调 |
-| **账号（可选账号源）** | `config/schema.py::AccountConfig` | `base_url`（账号站点地址）/ `prompt_done`（问过「要不要登录」没有）/ `show_balance`（状态栏是否显示余额）。★ 三个都只影响显示与提示，不影响可用性 |
+| **账号（可选账号源）** | `config/schema.py::AccountConfig` | `base_url`（账号站点地址）/ `prompt_done`（问过「要不要登录」没有）/ `provider_name`（账号绑定写进哪个供应商，默认 `wanxiang-account`）/ `key_name`（静默创建的密钥在站点上叫什么）。★ 登录后绑定的那套模型能力只在「账号」页提供 —— 它要用登录态换来的密钥 |
 
 ★ **改默认值时必须同步迁移用户已写入的旧值**（已踩过两次：`max_tokens`、`max_steps`），否则用户升级了仍跑旧行为。
 ★ 改完跑 `python scripts/check_config_fields.py`（抓前后端字段不一致）。

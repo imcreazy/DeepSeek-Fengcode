@@ -816,6 +816,7 @@ const SETTINGS_NAV = [
   { id: "sandbox", label: "沙箱", icon: "box", desc: "Shell 解释器、写入范围", page: "settings", tab: "safety" },
   { group: "应用" },
   { id: "account", label: "账号", icon: "users", desc: "登录后查看账户余额", page: "settings", tab: "account" },
+  { id: "wxtools", label: "万象实用功能", icon: "sparkles", desc: "签到、模型广场、额度测算等直达入口", page: "settings", tab: "wxtools" },
   { id: "advanced", label: "高级", icon: "flask", desc: "服务端口、数据目录、维护", page: "settings", tab: "adv" },
   { id: "about", label: "关于", icon: "info", desc: "版本与更新", page: "about" },
 ];
@@ -1204,6 +1205,20 @@ function renderSettingsSide() {
       <span class="ico">${icon(n.icon || "info", 15)}</span><span>${esc(n.label)}</span></button>`;
   }
   el.innerHTML = html;
+
+  // ★ 滚动条平时隐形、滚动时才显现。
+  //   为什么：侧栏内容比可视区高（分类多），滚动条常驻会在「返回工作区」右侧
+  //   一直挂着一条灰条，看着像多出来一个控件（实测反馈）。
+  //   ★ 只改透明度、不改宽度 —— 宽度一变，滚动时布局会横向抖一下。
+  if (!el.dataset.scrollBound) {
+    el.dataset.scrollBound = "1";
+    let hideTimer = 0;
+    el.addEventListener("scroll", () => {
+      el.classList.add("scrolling");
+      clearTimeout(hideTimer);
+      hideTimer = setTimeout(() => el.classList.remove("scrolling"), 900);
+    }, { passive: true });
+  }
 
   // 搜索：隐藏不匹配项，并隐藏空分组
   const input = $("#ss-filter");
@@ -1910,9 +1925,13 @@ function renderUsageBreakdown(stats) {
 /** 状态栏的余额项：未登录、或用户关掉了显示时返回空串。
     ★ 余额来自服务端的**脱敏快照**（界面拿不到凭证），是上次读取到的值，
       hover 用 title 说明更新于何时，避免把旧值当成实时值。 */
+/** 状态栏的余额项：未登录时返回空串。
+    ★ 余额**强制显示**（不再提供开关）—— 登录了就该看得见，不该还得去找开关。
+    ★ 余额来自服务端的**脱敏快照**（界面拿不到凭证），是上次读取到的值，
+      hover 用 title 说明更新于何时，避免把旧值当成实时值。 */
 function accountStatusHtml() {
   const a = S.account || {};
-  if (!a.logged_in || a.show_balance === false) return "";
+  if (!a.logged_in) return "";
   const cur = esc(a.currency || "");
   const bal = (a.balance == null) ? "—" : `${a.balance} ${cur}`;
   const tip = a.updated_at ? `更新于 ${fmtTime(a.updated_at)}` : "尚未读取余额";
@@ -6495,6 +6514,7 @@ PAGES.settings = async () => {
       <button class="tab" data-t="memory">记忆</button>
       <button class="tab" data-t="ui">外观</button>
       <button class="tab" data-t="account">账号</button>
+      <button class="tab" data-t="wxtools">实用功能</button>
       <button class="tab" data-t="adv">高级</button>
     </div>
     <div id="set-model" class="set-pane">
@@ -6775,17 +6795,35 @@ PAGES.settings = async () => {
          未登录 = 账密框；已登录 = 用户名 + 余额 + 刷新 + 退出。
          两态由 renderAccountPane() 填充，不在这里写死内容。 -->
     <div id="set-account" class="set-pane" style="display:none">
-      <div class="card"><h3>账号<span class="hint">可选，不登录也能用</span></h3>
+      <div class="card"><h3>账号<span class="hint">登录后自动绑定万象模型</span></h3>
         <div class="help" style="margin-bottom:10px">
-          登录后可以直接看到账户余额，不用再去网页上看。<br>
-          这只是增强项：不登录同样可以正常使用，自己填模型密钥即可。
+          登录后可以直接看到账户余额，并一键把账号能用的模型接进来。<br>
+          不登录也能用 Fengcode —— 自己填供应商密钥即可，只是没有下面这套账号绑定。
         </div>
         <div id="acct-box"></div>
       </div>
-      <div class="card"><h3>显示</h3>
-        <label class="switch"><input type="checkbox" id="acct-show"${(cfg.account || {}).show_balance !== false ? " checked" : ""}>
-          在底部状态栏显示余额</label>
-        <div class="help" style="margin-top:6px">关掉只是不显示，不影响登录状态。</div>
+      <!-- ★ 账号专用：模型绑定。只在登录后可用（要用登录态换来的密钥）。
+           逐模型配置与「模型服务」页共用同一份数据，两边看到的状态永远一致。 -->
+      <div class="card"><h3>模型<span class="hint">仅账号登录后可用</span></h3>
+        <div class="help" style="margin-bottom:10px">
+          点「获取模型」会把账号能用的模型拉下来，并自动在站上创建一条密钥（名字见下）。<br>
+          勾选要用的模型；勾上后可单独配上下文窗口、输出上限、是否支持图片。
+        </div>
+        <div class="row" style="margin-bottom:10px">
+          <button class="btn primary" id="acct-getmodels">获取模型</button>
+          <span id="acct-mmsg" style="font-size:12.5px;color:var(--text-dim)"></span>
+        </div>
+        <div id="acct-models"></div>
+      </div>
+    </div>
+    <!-- ★ 万象实用功能：把站点上常用的几页做成直达入口。
+         内容由 renderWxTools() 填充（模块级函数，只读全局状态）。 -->
+    <div id="set-wxtools" class="set-pane" style="display:none">
+      <div class="card"><h3>常用入口<span class="hint">点击用系统浏览器打开</span></h3>
+        <div class="help" style="margin-bottom:10px">
+          这些是账号站点上的页面。点一下会在浏览器里打开，需要登录的页面请先在那里登录一次。
+        </div>
+        <div id="wxt-links"></div>
       </div>
     </div>
     <div id="set-adv" class="set-pane" style="display:none">
@@ -6837,29 +6875,7 @@ PAGES.settings = async () => {
   // ★ 用户的核心诉求：模型前面一个框，打勾=启用；启用后逐模型配这三项；
   //   输入留空 = 不限制（交给上游），并在旁边给推荐值提示。
   const renderProviders = () => {
-    const modelRow = (p, m) => {
-      const ov = (p.model_overrides || {})[m] || {};
-      const on = ov.enabled !== false;   // 未显式设置 = 跟随供应商，视为启用
-      const supported = (p.models || []).includes(m);
-      return `<div class="mrow${on ? "" : " off"}" data-pname="${esc(p.name)}" data-mname="${esc(m)}">
-        <label class="switch mck">
-          <input type="checkbox" data-mon="${esc(p.name)}|${esc(m)}"${on ? " checked" : ""}>
-        </label>
-        <div class="mname" title="${esc(m)}">${esc(m)}
-          ${supported ? "" : '<span class="tag" style="margin-left:6px">自定义</span>'}
-        </div>
-        <div class="mfields">
-          <label title="这个模型能装多少上下文，自己填数字；留空=不限制">上下文窗口
-            <input type="number" data-mf="context_window" value="${ov.context_window || ""}"
-              placeholder="如 1048576"></label>
-          <label title="单次最多能输出多少 token，自己填数字；留空=不限制">输出上限
-            <input type="number" data-mf="max_output_tokens" value="${ov.max_output_tokens || ""}"
-              placeholder="如 384000"></label>
-          <label class="mvis" title="这个模型能不能读图">
-            <input type="checkbox" data-mf="vision"${ov.vision ? " checked" : ""}>支持图片</label>
-        </div>
-      </div>`;
-    };
+    // ★ 逐模型行用**模块级的共用渲染**（与账号页同一套）—— 两处形态一致、状态一致。
     const cardHtml = (p) => {
       const models = (p.models || []).length ? p.models : (p.default ? [p.default] : []);
       return `
@@ -6878,7 +6894,7 @@ PAGES.settings = async () => {
         <div class="mono" style="font-size:11px;color:var(--text-dim);margin-bottom:8px">${esc(p.base_url || "(未填地址)")}</div>
         ${models.length ? `<div class="mhead"><span></span><span>模型</span>
           <span class="mfields"><span>上下文窗口</span><span>输出上限</span><span></span></span></div>`
-          + models.map((m) => modelRow(p, m)).join("")
+          + models.map((m) => modelRowHtml(p, m)).join("")
           : '<div class="help">还没有模型。点「测试并获取模型」拉取，或在「编辑」里手填。</div>'}
         <div class="help" style="margin-top:8px">
           留空即不限制（交给上游）；灰色的字是内置能力表给出的推荐值，仅供参考、不会自动填入。
@@ -6943,55 +6959,31 @@ PAGES.settings = async () => {
     });
 
     // ---- 逐模型设置：勾选启用 + 上下文窗口 / 输出上限 / 支持图片 ----
-    const saveOverride = async (pname, model, patch) => {
-      try {
-        const r = await api("/api/providers", {
-          method: "POST",
-          body: { action: "model_override", name: pname, model, override: patch },
-        });
-        // 同步本地缓存，避免下次重渲染又读回旧值
-        const p = providers.find((x) => x.name === pname);
-        if (p) {
-          p.model_overrides = p.model_overrides || {};
-          if (r.override) p.model_overrides[model] = r.override;
-          else delete p.model_overrides[model];
-        }
-        toast("已保存", "ok");
-        // 模型启用状态与上下文窗口都会影响下拉框与右侧栏，刷新一次引导数据，
-        // 并重算上下文上限 —— 否则用户填完窗口，右侧栏仍显示「未限制」（实测反馈）。
-        try {
-          S.boot = await api("/api/bootstrap");
-          syncModelSelect();
-          applyContextLimit(S.boot);
-          renderInfoPanel();
-          renderStatusBar();
-        } catch (e) {}
-      } catch (e) { toast("保存失败：" + e.message, "err"); }
-    };
-    const fieldVal = (el) => (el.type === "checkbox"
-      ? el.checked
-      : (el.value.trim() === "" ? null : Math.max(0, Math.floor(Number(el.value) || 0))));
-    $$("[data-mon]").forEach((el) => el.onchange = () => {
-      const [pn, md] = String(el.dataset.mon || "").split("|");
-      if (pn && md) saveOverride(pn, md, { enabled: el.checked });
-    });
-    $$("[data-mf]").forEach((el) => el.onchange = () => {
-      const row = el.closest(".mrow");
-      if (!row) return;
-      saveOverride(row.dataset.pname, row.dataset.mname, { [el.dataset.mf]: fieldVal(el) });
-    });
+    // ★★ 用**模块级的共用保存与绑定**（与账号页同一套）：两处行为一致，
+    //    改哪边都一样；也避免「两套实现各自演化」这种老毛病。
+    bindModelRows($("#prov-list"), saveModelOverride);
   };
+  window.__renderProviders = renderProviders;
   renderProviders();
-  // 账号面板（两态由 renderAccountPane 填充）
+  // 账号面板（两态由 renderAccountPane 填充，含模型区块）
   renderAccountPane();
-  const showBal = $("#acct-show");
-  if (showBal) showBal.onchange = async () => {
-    try {
-      await api("/api/account", { method: "POST", body: { action: "show_balance", value: showBal.checked } });
-      if (S.account) S.account.show_balance = showBal.checked;
-      renderStatusBar();
-      toast(showBal.checked ? "已显示余额" : "已隐藏余额", "ok");
-    } catch (e) { toast("保存失败：" + e.message, "err"); }
+  // 万象实用功能页的链接清单
+  renderWxTools();
+
+  // ★ 默认模型选了万象、但账号还没登录 → 直接把人带到「账号」页。
+  //   为什么这么做：万象走的是**账号登录**那条链路（登录后自动配密钥 + 接入模型），
+  //   在模型服务页里手填密钥属于旧路径，容易让人卡在「填了 key 却不知道下一步」。
+  const sm = $("#s-model");
+  if (sm) sm.onchange = () => {
+    const pick = (d.models || []).find((m) => m.ref === sm.value) || {};
+    const prov = String(pick.provider || "");
+    const acct = S.account || {};
+    const isWanxiang = prov === "wanxiang" || prov === "wanxiang-account";
+    if (isWanxiang && !acct.logged_in) {
+      toast("万象模型需要先在「账号」页登录", "");
+      go("settings");
+      openSetting("account");
+    }
   };
 
   // 分段按钮（思考语言 / 压缩阈值）：点一个，同组其它取消选中；
@@ -7441,6 +7433,182 @@ async function loadRecoveryGlobal() {
    ★ 渲染与事件都写在**模块级**函数里（只读全局 S 与配置），
      避免掉进「模块级函数引用外层局部变量」那个坑。
    ========================================================================== */
+/* 逐模型一行：勾选启用 + 上下文窗口 / 输出上限 / 支持图片。
+   ★★ 模型服务页与账号页**共用这一个渲染**：两处形态一致，状态也一致
+      （同一份 model_overrides 数据，改哪边都一样）。 */
+function modelRowHtml(p, m) {
+  const ov = (p.model_overrides || {})[m] || {};
+  const on = ov.enabled !== false;   // 未显式设置 = 跟随供应商，视为启用
+  const supported = (p.models || []).includes(m);
+  return `<div class="mrow${on ? "" : " off"}" data-pname="${esc(p.name)}" data-mname="${esc(m)}">
+    <label class="switch mck">
+      <input type="checkbox" data-mon="${esc(p.name)}|${esc(m)}"${on ? " checked" : ""}>
+    </label>
+    <div class="mname" title="${esc(m)}">${esc(m)}
+      ${supported ? "" : '<span class="tag" style="margin-left:6px">自定义</span>'}
+    </div>
+    <div class="mfields">
+      <label title="这个模型能装多少上下文，自己填数字；留空=不限制">上下文窗口
+        <input type="number" data-mf="context_window" value="${ov.context_window || ""}"
+          placeholder="如 1048576"></label>
+      <label title="单次最多能输出多少 token，自己填数字；留空=不限制">输出上限
+        <input type="number" data-mf="max_output_tokens" value="${ov.max_output_tokens || ""}"
+          placeholder="如 384000"></label>
+      <label class="mvis" title="这个模型能不能读图">
+        <input type="checkbox" data-mf="vision"${ov.vision ? " checked" : ""}>支持图片</label>
+    </div>
+  </div>`;
+}
+
+/** 给一批模型行绑事件。saveFn 由调用方传（保存逻辑在设置页里，是局部函数）。 */
+function bindModelRows(root, saveFn) {
+  const scope = root || document;
+  const fieldVal = (el) => (el.type === "checkbox"
+    ? el.checked
+    : (el.value.trim() === "" ? null : Math.max(0, Math.floor(Number(el.value) || 0))));
+  scope.querySelectorAll("[data-mon]").forEach((el) => el.onchange = () => {
+    const [pn, md] = String(el.dataset.mon || "").split("|");
+    if (pn && md) saveFn(pn, md, { enabled: el.checked });
+  });
+  scope.querySelectorAll("[data-mf]").forEach((el) => el.onchange = () => {
+    const row = el.closest(".mrow");
+    if (!row) return;
+    saveFn(row.dataset.pname, row.dataset.mname, { [el.dataset.mf]: fieldVal(el) });
+  });
+}
+
+/** 保存逐模型覆盖。**模型服务页与账号页共用**。
+    ★★ 必须是模块级：账号页的模型行也要用它，而它不能引用设置页的局部变量
+      （那个坑踩过：模块级函数引用外层局部变量会抛 ReferenceError 被空 catch 吞掉）。 */
+async function saveModelOverride(pname, model, patch) {
+  try {
+    await api("/api/providers", {
+      method: "POST",
+      body: { action: "model_override", name: pname, model, override: patch },
+    });
+    toast("已保存", "ok");
+    // 模型启用状态与上下文窗口会影响下拉框与右侧栏，刷新一次并重算上限
+    try {
+      S.boot = await api("/api/bootstrap");
+      syncModelSelect();
+      applyContextLimit(S.boot);
+      renderInfoPanel();
+      renderStatusBar();
+    } catch (e) {}
+    // 两处的模型列表都要跟着变
+    renderAccountModels();
+    if (typeof window.__renderProviders === "function") window.__renderProviders();
+  } catch (e) { toast("保存失败：" + e.message, "err"); }
+}
+
+/** 账号页的模型区块：显示账号绑定那条供应商的逐模型行。
+    ★ 只在登录后才有内容 —— 这条链路要用登录态换来的密钥。 */
+function renderAccountModels() {
+  const box = $("#acct-models");
+  if (!box) return;
+  const a = S.account || {};
+  if (!a.logged_in) {
+    box.innerHTML = `<div class="help">登录后才能获取模型。</div>`;
+    return;
+  }
+  const pname = a.provider_name || "wanxiang-account";
+  const provs = (S.boot && S.boot.providers) || [];
+  const p = provs.find((x) => x.name === pname);
+  const models = (p && (p.models || []).length) ? p.models : [];
+  if (!p || !models.length) {
+    box.innerHTML = `<div class="help">还没有获取模型。点上面的「获取模型」，会把账号能用的模型拉下来并自动配好密钥。</div>`;
+    return;
+  }
+  box.innerHTML = models.map((m) => modelRowHtml(p, m)).join("");
+  bindModelRows(box, saveModelOverride);
+}
+
+/** 账号页「获取模型」：建（或复用）密钥 → 写进供应商 → 拉回模型列表。 */
+async function accountBindModels() {
+  const btn = $("#acct-getmodels");
+  if (btn) btn.disabled = true;
+  setText("#acct-mmsg", "获取中…");
+  try {
+    const r = await api("/api/account", { method: "POST", body: { action: "bind" } });
+    if (!r.ok) {
+      setText("#acct-mmsg", r.error || "获取失败");
+      return;
+    }
+    const n = (r.models || []).length;
+    setText("#acct-mmsg", n ? `已获取 ${n} 个模型` : "该账号暂无可用模型");
+    S.boot = await api("/api/bootstrap");
+    syncModelSelect();
+    applyContextLimit(S.boot);
+    renderInfoPanel();
+    renderStatusBar();
+    renderAccountModels();
+    if (typeof window.__renderProviders === "function") window.__renderProviders();
+    if (n) toast("模型已接入，勾选要用的即可", "ok");
+  } catch (e) {
+    setText("#acct-mmsg", "获取失败：" + e.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+/* ==========================================================================
+   万象实用功能：把账号站点上常用的页面做成直达入口
+   ---------------------------------------------------------------------
+   ★ 为什么放在客户端里：这些页分散在站点各处，用的时候要自己找；
+     做成一张清单，点一下就用系统浏览器打开。
+   ★ 用 <a target="_blank"> 而不是 window.open：桌面端会拦下新窗口、
+     交给系统浏览器打开（main.js 的 setWindowOpenHandler），浏览器里则是新标签页。
+   ★ 站点地址跟着账号配置走（未登录时快照里也有），不写死在链接里。
+   ========================================================================== */
+const WX_LINKS = [
+  { group: "常用", items: [
+    { label: "每日签到", path: "/checkin", desc: "每天领免费点数，连签有里程碑奖励" },
+    { label: "模型广场", path: "/pricing", desc: "有哪些模型、单价多少、支持什么能力" },
+    { label: "额度测算", path: "/token-calc", desc: "算一笔账：1 点数能换多少 token" },
+  ] },
+  { group: "用量与账单", items: [
+    { label: "使用日志", path: "/usage-logs", desc: "每一条调用的时间、模型、tokens、扣费" },
+    { label: "命中率统计", path: "/hit-rate", desc: "缓存命中率，越高越省钱" },
+    { label: "用量统计", path: "/usage-stats", desc: "按模型看用量分布" },
+    { label: "消费导出", path: "/consumption-export", desc: "把账单导出来对账" },
+  ] },
+  { group: "账号与点数", items: [
+    { label: "我的钱包", path: "/wallet", desc: "余额、充值记录" },
+    { label: "余额提醒", path: "/balance-alert", desc: "余额低时让站点提醒你" },
+    { label: "我的密钥", path: "/keys", desc: "客户端自动建的那条也在这里（名字：见账号页）" },
+    { label: "兑换码", path: "/redemption-codes", desc: "用兑换码充点数" },
+  ] },
+  { group: "邀请与返利", items: [
+    { label: "邀请好友", path: "/affiliate", desc: "邀请码与邀请记录，双方都有奖励" },
+    { label: "用模型返点数", path: "/rebate", desc: "用指定模型会把一部分点数返回来" },
+  ] },
+  { group: "其它", items: [
+    { label: "使用教程", path: "/tutorial", desc: "站点的新手引导" },
+    { label: "个人资料", path: "/profile", desc: "改密码、绑定邮箱等" },
+  ] },
+];
+
+function renderWxTools() {
+  const box = $("#wxt-links");
+  if (!box) return;
+  const a = S.account || {};
+  // ★ 站点地址**只从后端快照取**（未登录时快照里也带），前端不写死任何域名 ——
+  //   换了账号站点不用改代码，也不会把某一家写进源码。
+  const base = String(a.base_url || "").replace(/\/+$/, "");
+  if (!base) {
+    box.innerHTML = `<div class="help">暂时取不到账号站点地址，请到「账号」页登录后再看。</div>`;
+    return;
+  }
+  box.innerHTML = WX_LINKS.map((g) => `
+    <div class="wxt-group">${esc(g.group)}</div>
+    ${g.items.map((it) => `
+      <a class="wxt-item" href="${esc(base + it.path)}" target="_blank" rel="noopener noreferrer">
+        <span class="wxt-label">${esc(it.label)}</span>
+        <span class="wxt-desc">${esc(it.desc)}</span>
+      </a>`).join("")}
+  `).join("");
+}
+
 function renderAccountPane() {
   const box = $("#acct-box");
   if (!box) return;
@@ -7494,6 +7662,10 @@ function renderAccountPane() {
         if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); doLogin(); }
       });
     });
+    // ★ 未登录：模型区块显示提示、按钮置灰 —— 这条链路要用登录态换来的密钥
+    const gm0 = $("#acct-getmodels");
+    if (gm0) gm0.disabled = true;
+    renderAccountModels();
     return;
   }
 
@@ -7549,6 +7721,14 @@ function renderAccountPane() {
     renderStatusBar();
     toast("已退出登录", "ok");
   };
+
+  // ★ 模型区块（未登录时显示提示，登录后显示逐模型行）
+  renderAccountModels();
+  const gm = $("#acct-getmodels");
+  if (gm) {
+    gm.disabled = false;
+    gm.onclick = () => accountBindModels();
+  }
 }
 
 /** 首次进入时问一次「要不要登录看余额」。
@@ -7600,7 +7780,14 @@ async function providerAdd() {
   } catch (e) { presets = {}; }
 
   const ORDER = ["wanxiang", "deepseek", "zhipu", "mimo", "dashscope", "moonshot", "doubao", "minimax", "baichuan", "stepfun"];
-  const ids = ORDER.filter((k) => presets[k]).concat(Object.keys(presets).filter((k) => !ORDER.includes(k) && k !== "custom"));
+  // ★★ 万象预设改为「只展示、不可选」：它走**账号登录**那条链路
+  //   （登录后自动配好密钥并接入账号能用的模型，见「账号」页）。
+  //   仍然列出来，是为了告诉用户「支持万象，但请从账号页进」——
+  //   直接藏掉会让人以为这客户端不支持万象。
+  const ACCOUNT_ONLY = ["wanxiang"];
+  const ids = ORDER.filter((k) => presets[k] && !ACCOUNT_ONLY.includes(k))
+    .concat(Object.keys(presets).filter((k) =>
+      !ORDER.includes(k) && k !== "custom" && !ACCOUNT_ONLY.includes(k)));
 
   // 当前已存在的供应商名（预设已被添加过的话，提示"已添加"）
   let existing = [];
@@ -7618,6 +7805,10 @@ async function providerAdd() {
     <div id="pv-preset">
       <div class="field"><label>选择服务商</label>
         <select id="pv-sel">
+          ${ACCOUNT_ONLY.filter((k) => presets[k]).map((k) => {
+            const v = presets[k] || {};
+            return `<option value="" disabled>${esc(v.label || k)}（请到「账号」页登录使用）</option>`;
+          }).join("")}
           ${ids.map((k) => {
             const v = presets[k] || {};
             const used = existing.includes(k) ? "（已添加）" : "";
