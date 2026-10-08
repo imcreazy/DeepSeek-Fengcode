@@ -567,6 +567,24 @@ body.resizing-x, body.resizing-x * { cursor: ew-resize !important; }
 .ratio-legend { font-size: calc(11px * var(--ui-scale)); color: var(--text-dim); display: flex; align-items: center; gap: 5px; }
 .ratio-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
 
+/* 用量分析：按上游分组 —— 父级是供应商名，组内才是模型。
+   分组感靠「父级加粗 + 组间距 + 组内左缩进」，不额外加边框（卡片里再套框会很吵）。 */
+.ratio-group { margin-top: 8px; }
+.ratio-group + .ratio-group { margin-top: 10px; }
+.ratio-ghead {
+  display: flex; align-items: center; gap: 5px;
+  font-size: calc(11.5px * var(--ui-scale)); font-weight: 620; color: var(--text);
+  padding-bottom: 3px; border-bottom: 1px solid var(--border); margin-bottom: 3px;
+}
+.ratio-ghead .gname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ratio-ghead .gsep { color: var(--text-faint); }
+.ratio-group .lmodel { padding-left: 12px; }
+.ratio-group .lmodel .lm-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: "SF Mono", Consolas, monospace; font-size: calc(10.5px * var(--ui-scale));
+}
+.ratio-group .lmodel .lm-calls { color: var(--text-faint); margin-left: 8px; }
+
 /* 底部状态栏 */
 #statusbar {
   flex: none; height: 26px; display: flex; align-items: center; gap: 0;
@@ -960,6 +978,11 @@ details.prov-more > summary:hover { color: var(--text); }
 .field { margin-bottom: 11px; }
 .field label { display: block; font-size: calc(11.5px * var(--ui-scale)); color: var(--text-dim); margin-bottom: 4px; font-weight: 500; }
 .field .help { font-size: calc(11px * var(--ui-scale)); color: var(--text-faint); margin-top: 3px; }
+/* ★ 输入框 + 右侧动作按钮（账号页的「粘贴」/「显示」）。
+   用 flex 让输入框占满剩余宽度、按钮不被压缩；按钮高度与输入框一致才不会参差。 */
+.inp-act { display: flex; align-items: center; gap: 7px; }
+.inp-act > input { flex: 1; min-width: 0; }
+.inp-act > .btn, .inp-act > .switch { flex: none; }
 input[type=text], input[type=password], input[type=number], select, textarea {
   width: 100%; padding: 6px 9px; border-radius: 11px;
   border: 1px solid var(--border-strong); background: var(--bg);

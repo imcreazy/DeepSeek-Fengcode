@@ -1200,6 +1200,31 @@ async def api_providers(request: Any) -> Response:
         from ..config.schema import ModelOverride
 
         ov_patch = body.get("override") or {}
+        # ★★ 下限校验（前后端都要有，前端只管即时提示，后端才是真正的闸）。
+        #   背景：这两项会当真参与运行 —— 上下文窗口决定本地压缩阈值、
+        #   输出上限决定单次最大输出。实测能填成 1，填完上下文立刻被判定超限、
+        #   输出也写不出东西，现象是「模型突然什么都不回」，排查成本很高。
+        #   留空（None / ""）表示「不限制」，不受下限约束，照旧放行。
+        _mins = {"context_window": 64000, "max_output_tokens": 32000}
+        for _k, _min in _mins.items():
+            if _k not in ov_patch:
+                continue
+            _v = ov_patch.get(_k)
+            # 留空 = 不限制。**必须归一成 None**：空串既不该参与下限比较，
+            # 也不能原样交给模型校验 —— `int | None` 收到 "" 会抛校验异常，
+            # 表现为接口直接 500（实测复现过）。前端走的是 null，但 API 是公开面，
+            # 别把「只有自家前端才不踩」当设计。
+            if _v is None or (isinstance(_v, str) and not _v.strip()):
+                ov_patch[_k] = None
+                continue
+            try:
+                _n = int(_v)
+            except (TypeError, ValueError):
+                return _err(f"{_k} 必须是数字", 400)
+            if _n < _min:
+                _label = "上下文窗口" if _k == "context_window" else "输出上限"
+                return _err(f"{_label}不能小于 {_min}（留空表示不限制）", 400)
+            ov_patch[_k] = _n
         cur = prov.model_overrides.get(model)
         data = cur.model_dump(exclude_none=False) if cur is not None else {}
         data.update(ov_patch)

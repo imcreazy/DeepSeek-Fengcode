@@ -1894,30 +1894,72 @@ function renderUsageBreakdown(stats) {
       <div class="ip-sub">还没有调用记录</div></div>`;
   }
   const total = byModel.reduce((s, m) => s + (m.total_tokens || 0), 0) || 1;
-  const palette = ["#4f46e5", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6"];
-  let bars = "", legend = "";
-  byModel.slice(0, 6).forEach((m, i) => {
-    const share = ((m.total_tokens || 0) / total) * 100;
-    // ★★ 占比不足 1% 时不能圆成 0%：那会让「真的调用过几次」看起来像
-    //   「从没用过却莫名占一行」（实测反馈的正是这个观感：glm 调用过 4 次、
-    //   合计约 6 万 token，占比 0.2%，显示成 0% 就成了「我没用过 glm 啊」）。
-    //   如实写「<1%」并把调用次数摆出来，用户一眼能对上账。
-    const pctText = share >= 1 ? `${Math.round(share)}%` : "<1%";
-    // 色条宽度给一个可视下限，否则 0.2% 的条子是一个像素都看不见的空白，
-    // 图例上却有一行 —— 看着像界面错乱。
-    const barW = share >= 1 ? Math.round(share) : 1.2;
-    bars += `<i style="width:${barW}%;background:${palette[i % palette.length]}"></i>`;
-    legend += `<div class="ratio-legend" style="margin-top:4px">
-      <span class="ratio-dot" style="background:${palette[i % palette.length]}"></span>
-      <span>${esc(m.model || m.name || "未知")}</span>
-      <span class="spacer" style="flex:1"></span>
-      <span title="${fmtNum(m.total_tokens || 0)} tokens">${pctText}</span>
-      <span style="color:var(--text-faint);margin-left:8px">${fmtNum(m.calls || 0)} 次</span></div>`;
+  // ★★ 按**上游供应商**分组显示。
+  //   为什么：同一个模型名可能同时挂在两个供应商下（例如同一个模型既有手填密钥
+  //   的供应商、又有账号接入的那条），旧实现只按模型平铺 —— 列表里就出现
+  //   「两行一模一样的模型名」，看不出哪一行来自哪个上游，也没法比对。
+  //   现在父级是**用户自己设的供应商名**，组内才是模型，来源一眼可分。
+  const nameMap = {};
+  (((S.boot || {}).providers) || []).forEach((p) => {
+    if (p && p.name) nameMap[p.name] = p.display_name || p.name;
   });
+  const labelOf = (key) => nameMap[key] || key || "未知来源";
+
+  const groups = new Map();
+  byModel.forEach((m) => {
+    const key = String(m.provider || "");
+    if (!groups.has(key)) groups.set(key, { key, models: [], tokens: 0, calls: 0 });
+    const g = groups.get(key);
+    g.models.push(m);
+    g.tokens += Number(m.total_tokens) || 0;
+    g.calls += Number(m.calls) || 0;
+  });
+  const plist = [...groups.values()].sort((a, b) => b.tokens - a.tokens);
+  plist.forEach((g) => g.models.sort(
+    (a, b) => (Number(b.total_tokens) || 0) - (Number(a.total_tokens) || 0)));
+
+  const palette = ["#4f46e5", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6"];
+  // ★★ 占比不足 1% 时不能圆成 0%：那会让「真的调用过几次」看起来像
+  //   「从没用过却莫名占一行」（实测：glm 调用过 4 次、占比 0.2%，
+  //   显示成 0% 就成了「我没用过 glm 啊」）。如实写「<1%」并把次数摆出来。
+  //   色条同理给一个可视下限，否则 0.2% 的条子一个像素都看不见。
+  const share = (v) => {
+    const p = ((Number(v) || 0) / total) * 100;
+    return { text: p >= 1 ? `${Math.round(p)}%` : "<1%", w: p >= 1 ? Math.round(p) : 1.2 };
+  };
+  const shown = plist.slice(0, 6);
+  let bars = "", body = "";
+  shown.forEach((g, i) => {
+    const color = palette[i % palette.length];
+    const gp = share(g.tokens);
+    bars += `<i style="width:${gp.w}%;background:${color}"></i>`;
+    body += `<div class="ratio-group">
+      <div class="ratio-ghead">
+        <span class="ratio-dot" style="background:${color}"></span>
+        <span class="gname" title="${esc(labelOf(g.key))}">${esc(labelOf(g.key))}</span>
+        <span class="spacer" style="flex:1"></span>
+        <span title="${fmtNum(g.tokens)} tokens">${gp.text}</span>
+        <span class="gsep">·</span>
+        <span>${fmtNum(g.calls)} 次</span>
+      </div>
+      ${g.models.slice(0, 8).map((m) => {
+        const mp = share(m.total_tokens);
+        return `<div class="ratio-legend lmodel">
+          <span class="lm-name" title="${esc(m.model || m.name || "")}">${esc(m.model || m.name || "未知")}</span>
+          <span class="spacer" style="flex:1"></span>
+          <span title="${fmtNum(m.total_tokens || 0)} tokens">${mp.text}</span>
+          <span class="lm-calls">${fmtNum(m.calls || 0)} 次</span>
+        </div>`;
+      }).join("")}
+    </div>`;
+  });
+  const shownModels = shown.reduce((s, g) => s + Math.min(g.models.length, 8), 0);
+  const moreModels = byModel.length - shownModels;
   return `<div class="ip-card">
-    <h4>用量分析<span class="hint">共 ${byModel.length} 个模型</span></h4>
+    <h4>用量分析<span class="hint">${plist.length} 个上游 · ${byModel.length} 个模型</span></h4>
     <div class="ratio-bar">${bars}</div>
-    ${legend}
+    ${body}
+    ${moreModels > 0 ? `<div class="ip-legend" style="margin-top:7px"><span>另有 ${moreModels} 个模型未列出</span></div>` : ""}
   </div>`;
 }
 
@@ -6883,7 +6925,17 @@ PAGES.settings = async () => {
   // 勾上后可以单独配置「上下文窗口 / 输出上限 / 支持图片」。
   // ★ 用户的核心诉求：模型前面一个框，打勾=启用；启用后逐模型配这三项；
   //   输入留空 = 不限制（交给上游），并在旁边给推荐值提示。
-  const renderProviders = () => {
+  const renderProviders = async () => {
+    // ★★ 重渲染前**必须重新拉取**供应商数据。
+    //   为什么：`providers` 是页面加载时抓下来的**局部快照**，逐模型覆盖保存后它就
+    //   已经是旧的了。旧实现直接拿这份旧快照重绘，于是刚填好的上下文窗口/输出上限
+    //   又被画回旧值 —— 实测现象正是「提示已保存，但输入框显示的还是改之前的数字，
+    //   切到别的页再切回来才更新」。服务端每次都会返回最新值，重拉一次即可，
+    //   不必依赖调用方传参，也不必让各调用点各自记得刷新。
+    try {
+      const pv = await api("/api/providers");
+      providers = pv.providers || providers;
+    } catch (e) { /* 拉取失败就用现有快照渲染，总比整块不渲染好 */ }
     // ★ 逐模型行用**模块级的共用渲染**（与账号页同一套）—— 两处形态一致、状态一致。
     const cardHtml = (p) => {
       const models = (p.models || []).length ? p.models : (p.default ? [p.default] : []);
@@ -7462,11 +7514,11 @@ function modelRowHtml(p, m) {
     <div class="mcfg">
       <div class="mline">
         <span class="mtag">容量</span>
-        <label title="这个模型能装多少上下文，自己填数字；留空=不限制">上下文窗口
-          <input type="number" data-mf="context_window" value="${ov.context_window || ""}"
+        <label title="这个模型能装多少上下文，自己填数字；留空=不限制。最小 64000">上下文窗口
+          <input type="number" min="64000" data-mf="context_window" value="${ov.context_window || ""}"
             placeholder="如 1048576"></label>
-        <label title="单次最多能输出多少 token，自己填数字；留空=不限制">输出上限
-          <input type="number" data-mf="max_output_tokens" value="${ov.max_output_tokens || ""}"
+        <label title="单次最多能输出多少 token，自己填数字；留空=不限制。最小 32000">输出上限
+          <input type="number" min="32000" data-mf="max_output_tokens" value="${ov.max_output_tokens || ""}"
             placeholder="如 384000"></label>
         <label class="mvis" title="这个模型能不能读图">
           <input type="checkbox" data-mf="vision"${ov.vision ? " checked" : ""}>支持图片</label>
@@ -7496,6 +7548,20 @@ function bindModelRows(root, saveFn) {
     ? el.checked
     : (el.value.trim() === "" ? null : Math.max(0, Math.floor(Number(el.value) || 0))));
   const priceVal = (el) => (el.value.trim() === "" ? null : Math.max(0, Number(el.value) || 0));
+  // ★★ 容量两项的**下限**（后端 /api/providers 也会拦，这里是为了即时反馈）。
+  //   为什么必须在前端也拦：这两个值会当真参与运行 —— 上下文窗口决定本地压缩阈值、
+  //   输出上限决定单次最大输出；填成 1 会让上下文立刻被判超限、输出也写不出来，
+  //   表现为「模型突然什么都不回」。只靠后端拦的话，用户要等到提交后才看到失败，
+  //   而输入框里那个坏值还留着，很容易接着踩。
+  const MINS = { context_window: 64000, max_output_tokens: 32000 };
+  const LABELS = { context_window: "上下文窗口", max_output_tokens: "输出上限" };
+  /** 当前已保存的值（校验不通过时用来把输入框还原，别把坏值留在界面上）。 */
+  const savedVal = (row, key) => {
+    const provs = ((S.boot || {}).providers) || [];
+    const p = provs.find((x) => x.name === row.dataset.pname);
+    const ov = p && p.model_overrides ? p.model_overrides[row.dataset.mname] : null;
+    return ov && ov[key] != null ? String(ov[key]) : "";
+  };
   scope.querySelectorAll("[data-mon]").forEach((el) => el.onchange = () => {
     const [pn, md] = String(el.dataset.mon || "").split("|");
     if (pn && md) saveFn(pn, md, { enabled: el.checked });
@@ -7517,6 +7583,19 @@ function bindModelRows(root, saveFn) {
       saveFn(row.dataset.pname, row.dataset.mname,
         { price: any ? { input: vIn || 0, output: vOut || 0, cache_hit: vCac || 0 } : null });
       return;
+    }
+    // ★★ 容量两项：非空且低于下限 → 拦下、提示、把输入框还原成已保存的值。
+    //   留空仍表示「不限制」，不受下限约束。
+    if (key in MINS) {
+      const raw = el.value.trim();
+      if (raw !== "") {
+        const n = Math.floor(Number(raw) || 0);
+        if (!(n >= MINS[key])) {
+          toast(`${LABELS[key]}不能小于 ${MINS[key]}（留空表示不限制）`, "err");
+          el.value = savedVal(row, key);
+          return;
+        }
+      }
     }
     saveFn(row.dataset.pname, row.dataset.mname, { [key]: fieldVal(el) });
   });
@@ -7651,15 +7730,25 @@ function renderAccountPane() {
   if (!a.logged_in) {
     box.innerHTML = `
       <div class="field"><label>账号<span class="hint">邮箱或用户名</span></label>
-        <input type="text" id="acct-user" autocomplete="username" placeholder="登录账号"></div>
+        <div class="inp-act">
+          <input type="text" id="acct-user" autocomplete="username" placeholder="登录账号">
+          <button class="btn sm ghost" type="button" id="acct-user-paste"
+            title="从剪贴板粘贴，不走键盘输入">粘贴</button>
+        </div></div>
       <div class="field"><label>密码<span class="hint">只用于本次登录</span></label>
-        <input type="password" id="acct-pass" autocomplete="current-password" placeholder="不会保存在本机"></div>
+        <div class="inp-act">
+          <input type="password" id="acct-pass" autocomplete="current-password" placeholder="不会保存在本机">
+          <button class="btn sm ghost" type="button" id="acct-pass-paste"
+            title="从剪贴板粘贴，不走键盘输入">粘贴</button>
+          <label class="switch" title="把密码显示成明文，便于确认到底输进去了什么">
+            <input type="checkbox" id="acct-pass-show">显示</label>
+        </div></div>
       <div class="row" style="margin-top:10px">
         <button class="btn primary" id="acct-login">登录</button>
         <span id="acct-msg" style="font-size:12.5px;color:var(--text-dim)"></span>
       </div>
       <div class="help" style="margin-top:8px">
-        密码不落盘，凭证只存服务端。
+        密码不落盘，凭证只存服务端。输入法打不出字时可用「粘贴」按钮。
       </div>`;
 
     const btn = $("#acct-login");
@@ -7689,6 +7778,42 @@ function renderAccountPane() {
       }
     };
     if (btn) btn.onclick = doLogin;
+    // ★★ 「粘贴」：把剪贴板内容填进输入框，**完全绕开输入法**。
+    //   为什么需要：桌面端上中文输入法的候选框偶尔不出现（实测症状就是
+    //   「能点输入框、能看见光标，就是打不进字」），而账号与密码本来都是
+    //   邮箱/字母数字符号，用粘贴最省事。桌面端走主进程读剪贴板（最稳），
+    //   网页版退回浏览器剪贴板接口；两处都拿不到就如实说明，不假装成功。
+    const pasteInto = async (sel, { trim = true } = {}) => {
+      const el = $(sel);
+      if (!el) return;
+      let text = "";
+      try {
+        if (window.fengcode && typeof window.fengcode.readClipboard === "function") {
+          text = await window.fengcode.readClipboard();
+        } else if (navigator.clipboard && navigator.clipboard.readText) {
+          text = await navigator.clipboard.readText();
+        }
+      } catch (e) { text = ""; }
+      const val = String(text || "");
+      // 账号去掉首尾空白；密码**不能**去空白（空格可能是密码的一部分）
+      el.value = trim ? val.trim() : val;
+      if (!el.value) {
+        setText("#acct-msg", "剪贴板是空的，或没有读取剪贴板的权限");
+        return;
+      }
+      try { el.focus(); } catch (e) {}
+      setText("#acct-msg", "已粘贴，点「登录」");
+    };
+    const up = $("#acct-user-paste");
+    if (up) up.onclick = () => pasteInto("#acct-user", { trim: true });
+    const pp = $("#acct-pass-paste");
+    if (pp) pp.onclick = () => pasteInto("#acct-pass", { trim: false });
+    // ★ 「显示密码」：只想看清到底输进去了什么，不改变提交的值
+    const shower = $("#acct-pass-show");
+    if (shower) shower.onchange = () => {
+      const p = $("#acct-pass");
+      if (p) p.type = shower.checked ? "text" : "password";
+    };
     // 回车即登录
     ["#acct-user", "#acct-pass"].forEach((sel) => {
       const el = $(sel);

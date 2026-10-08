@@ -40,6 +40,13 @@ class ModelOverride(_Base):
     """单个模型的覆盖声明。"""
 
     display_name: str | None = None
+    # ★★ 这两个字段有**下限**（1.3.0 起 /api/providers 的 model_override 会校验）：
+    #   上下文窗口最少 64000、输出上限最少 32000。
+    #   为什么要有下限：这两项的值会当成「本地压缩阈值 / 单次最大输出」参与运行，
+    #   填成 1 这类没有意义的数字等于把模型能力人为掐到不可用 —— 实测能填 1，
+    #   填完上下文立刻被判定超限、输出也写不出东西，排查成本很高。
+    #   下限取「主流模型的最小可用量级」：64K 上下文 / 32K 输出都还在正常范围内，
+    #   再小就不像是有意为之了。留空仍然表示「不限制」，不受下限约束。
     context_window: int | None = None
     max_output_tokens: int | None = None
     vision: bool | None = None

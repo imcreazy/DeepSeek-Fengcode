@@ -23,6 +23,9 @@ contextBridge.exposeInMainWorld("fengcode", {
   /** 复制到剪贴板 */
   copy: (text) => ipcRenderer.invoke("fengcode:copy", text),
 
+  /** ★ 读剪贴板（账号页「粘贴」按钮用；输入法打不出字时的替代输入路径） */
+  readClipboard: () => ipcRenderer.invoke("fengcode:readClipboard"),
+
   /** 在系统文件管理器中显示文件或文件夹 */
   showInFolder: (filePath) => ipcRenderer.invoke("fengcode:showInFolder", filePath),
 

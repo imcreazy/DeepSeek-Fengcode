@@ -1044,6 +1044,13 @@ ipcMain.handle("fengcode:copy", (_e, text) => {
   clipboard.writeText(String(text || ""));
 });
 
+// ★ 读剪贴板：账号页的「粘贴」按钮用（输入法候选框不出时，粘贴是唯一稳的输入方式）。
+//   走主进程而不是浏览器的 navigator.clipboard：桌面端下后者在非 https 页面会被拒，
+//   而这里只是本机自用的小工具，读剪贴板等价于用户自己按 Ctrl+V，不需要额外授权。
+ipcMain.handle("fengcode:readClipboard", () => {
+  try { return clipboard.readText() || ""; } catch (e) { return ""; }
+});
+
 ipcMain.handle("fengcode:showInFolder", (_e, filePath) => {
   if (typeof filePath !== "string" || !filePath.trim()) return false;
   const target = path.resolve(filePath);

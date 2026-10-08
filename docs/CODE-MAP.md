@@ -129,6 +129,7 @@
 | 主题（配色/图片主题） | `applyTheme()` / `applySkin()` / `applyImageTheme()` / `syncImageThemeDim()` |
 | 字号缩放 | `applyFontSize()`（写 `html[data-fs]`，样式全部 `calc(Npx * var(--ui-scale))`） |
 | **逐模型配置行** | `modelRowHtml()` / `bindModelRows()` —— 模型服务页与账号页**共用同一套渲染与绑定**。★★ 结构硬约束：字段区必须**整体只包在一个 `.mcfg` 里**（内含「容量」「单价」两个 `.mline`）。旧写法把两组并列成 `.mrow` 网格的第 3、第 4 个子元素，而该行只有 3 列 → 第 4 个被自动排到**第二行第 1 列**（26px 宽），价格字段从整行最左侧溢出、与上方字段完全错位（实测 x=273 vs x=521）。改这块前先看 `app.css` 里 `.mrow` / `.mcfg` 段落的说明 |
+| **容量下限** | `bindModelRows()` 里的 `MINS` + `server/app.py` 的 `model_override` 分支 | 上下文窗口 ≥ 64000、输出上限 ≥ 32000，**两处都要有**（前端即时拦并还原输入框，后端才是真正的闸）。★ 留空（null / 空串）表示「不限制」，不受下限约束；★ 后端必须把空串**归一成 None**，否则 pydantic 校验 `int\\|None` 会抛异常、接口直接 500（实测复现过） |
 
 ### 3.5 ★★ 会话级运行状态与「多对话并行」（改这几块前必读）
 
@@ -224,8 +225,8 @@
 | 峰谷价 | `llm/router.py::_in_peak_hours()` / `price_phase()` | 只有价目表填了谷价才生效 |
 | 价目表结构 | `config/schema.py::Price` | `input` / `output` / `cache_hit` / `off_peak_*` / `unit` / `currency` |
 | 用量类型 | `llm/types.py::Usage` | `prompt_tokens` / `cached_tokens` / `completion_tokens` |
-| **按模型汇总** | `storage/stats.py::StatsStore.by_model()` | ★ 带 `HAVING` 过滤：token 与费用全为 0 的条目（失败调用）**不列出**，与前端 `renderUsageBreakdown()` 同口径 |
-| 用量占比展示 | `app.js::renderUsageBreakdown()` | 占比不足 1% 显示「<1%」而非四舍五入成 0%（否则「用过但很少」看起来像「没用过」） |
+| **按模型汇总** | `storage/stats.py::StatsStore.by_model()` | ★ 带 `HAVING` 过滤：token 与费用全为 0 的条目（失败调用）**不列出**，与前端 `renderUsageBreakdown()` 同口径。返回**带 `provider` 字段**（前端按它分组，别删） |
+| 用量占比展示 | `app.js::renderUsageBreakdown()` | ★★ **按上游供应商分组**：父级是用户设的供应商显示名（`S.boot.providers` 的 `display_name`，取不到才退回内部 name），组内才是模型 —— 否则同一个模型挂在两个供应商下时会显示成两行一模一样的名字，看不出来源。占比不足 1% 显示「<1%」而非四舍五入成 0%（否则「用过但很少」看起来像「没用过」） |
 
 ---
 
