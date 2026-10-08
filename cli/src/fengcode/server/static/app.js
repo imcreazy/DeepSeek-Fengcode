@@ -535,10 +535,20 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal
 /* ---------------- API ---------------- */
 let TOKEN = "";
 try { TOKEN = localStorage.getItem("fengcode_token") || ""; } catch (e) {}
+/* ★ 手机配对令牌（1.4.0）：手机远程访问时，服务端要求带上配对令牌才放行。
+   从 URL 的 ?pair= 读一次就记住 —— 否则扫码打开后每个请求都会被判未授权。
+   带在**请求头**里而不是每次拼 URL：URL 会进日志、也会被复制传播。 */
+let PAIR = "";
+try { PAIR = localStorage.getItem("fengcode_pair") || ""; } catch (e) {}
+try {
+  const _p = new URLSearchParams(location.search).get("pair");
+  if (_p) { PAIR = _p; localStorage.setItem("fengcode_pair", _p); }
+} catch (e) {}
 const api = async (path, opts) => {
   opts = opts || {};
   const headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
   if (TOKEN) headers["X-Fengcode-Token"] = TOKEN;
+  if (PAIR) headers["X-Fengcode-Pair"] = PAIR;
   const res = await fetch(path, Object.assign({}, opts, {
     headers,
     body: opts.body && typeof opts.body !== "string" ? JSON.stringify(opts.body) : opts.body,
@@ -788,7 +798,10 @@ document.addEventListener("DOMContentLoaded", () => {
 /* ---------------- 设置中心的分类定义 ---------------- */
 const PAGES = {};
 /* 右侧设置页的分组；`page` 指明这一项对应哪个已有页面渲染函数
-   分组顺序：偏好设置 / 模型 / 集成与连接 / 能力扩展 / 自动化与开发者 / 安全与控制 / 应用 */
+   分组顺序：偏好设置 / 模型 / 能力扩展 / 运行环境 / 自动化与开发者 / 安全与控制 / 应用
+   ★ 1.4.0 重组：MCP + 插件 + 技能三页合并为「扩展」（整合到一个页面里，
+     同一件事不再散在三处）；原「集成与连接」栏位取消（远程并入能力扩展、
+     网络与存储归入运行环境）。 */
 const SETTINGS_NAV = [
   { group: "偏好设置" },
   { id: "general", label: "通用", icon: "palette", desc: "语言、币种、会话体验" },
@@ -797,15 +810,16 @@ const SETTINGS_NAV = [
   { id: "providers", label: "模型服务", icon: "key", desc: "供应商、密钥、默认模型", page: "settings", tab: "model" },
   { id: "agent", label: "模型偏好", icon: "compass", desc: "步数、温度、思考语言", page: "settings", tab: "agent" },
   { id: "usage", label: "用量统计", icon: "chart", desc: "调用次数、tokens、费用", page: "stats" },
-  { group: "集成与连接" },
-  { id: "mcp", label: "MCP 与工具", icon: "plug", desc: "MCP 服务器与内置工具", page: "mcp" },
-  { id: "remote", label: "远程 SSH", icon: "server", desc: "远程主机与命令执行", page: "remote" },
   { group: "能力扩展" },
-  { id: "skills", label: "技能", icon: "bolt", desc: "SKILL.md 与 Python 技能", page: "skills" },
+  { id: "extensions", label: "扩展", icon: "puzzle", desc: "技能、插件与 MCP 服务", page: "extensions" },
   { id: "subagents", label: "子智能体", icon: "users", desc: "内置预设、并行派生与预算", page: "subagents" },
-  { id: "plugins", label: "插件", icon: "puzzle", desc: "扩展工具与钩子", page: "plugins" },
   { id: "memory", label: "记忆", icon: "brain", desc: "记忆条目、召回设置、指令文件",
     page: "settings", tab: "memory" },
+  { id: "remote", label: "远程和手机访问", icon: "server", desc: "接入别的机器，以及用手机连过来",
+    page: "remote" },
+  { group: "运行环境" },
+  { id: "network", label: "网络", icon: "globe", desc: "代理与连接测试", page: "network" },
+  { id: "storage", label: "存储", icon: "folder", desc: "数据占用与存放位置", page: "storage" },
   { group: "自动化与开发者" },
   { id: "jobs", label: "定时任务", icon: "clock", desc: "cron 定时执行", page: "jobs" },
   { id: "audit", label: "审计日志", icon: "clipboard", desc: "操作留痕，密钥已脱敏", page: "audit" },
@@ -822,7 +836,8 @@ const SETTINGS_NAV = [
 const PAGE_TITLES = {
   chat: "对话", sessions: "会话记录", settings: "设置",
   memory: "记忆", skills: "技能", tools: "工具", mcp: "MCP 服务",
-  plugins: "插件", workflows: "工作流", jobs: "定时任务", remote: "远程主机",
+  plugins: "插件", extensions: "扩展", workflows: "工作流", jobs: "定时任务",
+  remote: "远程和手机访问", network: "网络", storage: "存储",
   stats: "用量统计", audit: "审计日志", about: "关于",
 };
 /* 兼容旧代码里对 NAV 的引用 */
@@ -1160,7 +1175,7 @@ async function go(page, opt) {
     tl.innerHTML = logoSvg(18);
     tl.onclick = () => go("chat");
   }
-  renderTopActions(page);
+  renderTopActions(page, (opt && opt.tab) || "");
 
   if (page === "settings") {
     renderSettingsSide();
@@ -1168,6 +1183,9 @@ async function go(page, opt) {
   } else if (PAGES[page]) {
     try { await PAGES[page](); } catch (e) { toast("加载失败：" + e.message, "err"); }
   }
+  // ★ 页面级按钮在**页面渲染之后**才挂进内容顶部（先挂会被 el.innerHTML 冲掉）。
+  //   设置页由 openSetting 自己挂，对话页的按钮留在顶栏。
+  if (page !== "settings" && page !== "chat") mountTopActions("#page-" + page);
   if (page === "chat") setTimeout(() => $("#input").focus(), 50);
   // 切回对话页后重新同步一次输入区留白：setupResizers() 在初始化时跑，
   // 那时 #chat-page 还没 .active（display:none），量不到 #composer 的真实高度，
@@ -1258,8 +1276,9 @@ async function openSetting(id) {
   if (!body) return;
 
   // 顶部工具栏按「这个分类对应的页面」渲染 ——
-  // 否则在设置中心里看不到「添加服务」「新建插件」这类页面级按钮。
-  try { renderTopActions(meta.page || "settings"); } catch (e) {}
+  // 否则在设置中心里看不到「新增记忆」这类页面级按钮。
+  // ★ 1.4.0：这里只**构建**，渲染完后再由 mountTopActions 挂到内容顶部。
+  try { renderTopActions(meta.page || "settings", meta.tab || ""); } catch (e) {}
 
   // 把上次搬进设置中心的内容放回原位，
   // 否则原页面会留个空位，来回切换就再也找不到了。
@@ -1282,6 +1301,7 @@ async function openSetting(id) {
   // 通用（界面外观等）由这里自己渲染
   if (id === "general") {
     await renderGeneralSettings(body);
+    mountTopActions(body);
     return;
   }
 
@@ -1465,9 +1485,10 @@ async function renderGeneralSettings(body) {
         <div class="sr-desc">新建会话时默认采用哪种权限；对话中仍可随时切换</div>
       </div>
       <div class="sr-ctl"><select id="g-default-perm">
-        <option value="deny"${(ui.default_permission || (ui.default_readonly ? "deny" : "ask")) === "deny" ? " selected" : ""}>只读</option>
-        <option value="ask"${(ui.default_permission || "ask") === "ask" ? " selected" : ""}>工作区可改（推荐）</option>
-        <option value="allow"${(ui.default_permission || "ask") === "allow" ? " selected" : ""}>完全权限</option>
+        <option value="deny"${(ui.default_permission || (ui.default_readonly ? "deny" : "workspace")) === "deny" ? " selected" : ""}>只读</option>
+        <option value="ask"${ui.default_permission === "ask" ? " selected" : ""}>询问</option>
+        <option value="workspace"${(ui.default_permission || "workspace") === "workspace" ? " selected" : ""}>工作区放行（推荐）</option>
+        <option value="allow"${ui.default_permission === "allow" ? " selected" : ""}>完全权限</option>
       </select></div>
     </div>
 
@@ -1622,8 +1643,7 @@ function toggleInfoPanel(open) {
 }
 
 async function openSessionTrash() {
-  modal("回收站", `<div class="sec-desc">归档的会话会保留在这里，可以恢复到项目列表。
-    「恢复副本」是从某个对话派生出来的分支，已折进它的来源对话下面。</div><div id="trash-list" style="max-height:48vh;overflow:auto"></div>`, `<button class="btn" data-close>关闭</button>`);
+  modal("回收站", `<div class="sec-desc">归档的会话会保留在这里，可以恢复到项目列表。</div><div id="trash-list" style="max-height:48vh;overflow:auto"></div>`, `<button class="btn" data-close>关闭</button>`);
   const list = $("#trash-list");
   try {
     const d = await api("/api/sessions?limit=200&archived=1");
@@ -2197,7 +2217,13 @@ function downloadText(name, text, type) {
   a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
-function renderTopActions(page) {
+/* 页面级动作按钮。
+   ★★★ 1.4.0：不再渲染在顶栏 —— 顶栏那一行与最小化/关闭挤在一起，既难被注意到
+     又割裂（实测反馈）。这里只**构建**，由 mountTopActions() 在**页面渲染之后**
+     搬到内容顶部（先挂会被各页的 el.innerHTML 冲掉）。
+   ★ 纯「刷新」按钮一律删掉：进入页面本来就会重新拉数据，摆着只是占地方。
+   ★ 页面内**已有**同类按钮的不再重复（如远程页自带「添加主机」）。 */
+function renderTopActions(page, tab) {
   const bar = $("#top-actions");
   const btn = (label, fn, cls) => {
     const b = document.createElement("button");
@@ -2207,45 +2233,18 @@ function renderTopActions(page) {
     return b;
   };
   bar.innerHTML = "";
+  bar.classList.remove("has-chat-actions");
+  // 对话页的「导出」留在顶栏：它属于主界面，不是设置里的页面。
   if (page === "chat") {
     bar.appendChild(btn("导出", () => openExportMenu($("#top-actions button")), ""));
-    // 顶部不放「新对话」（侧边栏已有），只保留轻量导出和侧栏开关。
     bar.classList.add("has-chat-actions");
   } else if (page === "sessions") {
     bar.appendChild(btn("新建会话", newSession, "primary"));
-    bar.appendChild(btn("刷新", () => PAGES.sessions()));
-  } else if (page === "memory") {
+  } else if (page === "memory" || (page === "settings" && tab === "memory")) {
     bar.appendChild(btn("新增记忆", () => memoryEdit(null), "primary"));
     bar.appendChild(btn("重建索引", async () => {
       try { const r = await api("/api/memories", { method: "POST", body: { action: "reindex" } });
         toast(`已重建 ${r.count} 条索引`, "ok"); PAGES.memory(); } catch (e) { toast(e.message, "err"); }
-    }));
-    bar.appendChild(btn("刷新", () => PAGES.memory()));
-  } else if (page === "skills") {
-    bar.appendChild(btn("新建技能", () => skillCreate(), "primary"));
-    bar.appendChild(btn("重新扫描", async () => {
-      try { const r = await api("/api/skills", { method: "POST", body: { action: "reload" } });
-        toast(`发现 ${r.count} 个技能`, "ok"); PAGES.skills(); } catch (e) { toast(e.message, "err"); }
-    }));
-  } else if (page === "tools") {
-    bar.appendChild(btn("刷新", () => PAGES.tools()));
-  } else if (page === "mcp") {
-    bar.appendChild(btn("添加服务", () => mcpEdit(null), "primary"));
-    bar.appendChild(btn("从配置导入", importMcp, ""));
-    bar.appendChild(btn("全部启动", async () => {
-      try {
-        const d = await api("/api/mcp");
-        for (const s of (d.configured || [])) {
-          if (s.enabled) { try { await api("/api/mcp", { method: "POST", body: { action: "start", name: s.name } }); } catch (e) {} }
-        }
-        toast("已启动全部服务", "ok"); PAGES.mcp();
-      } catch (e) { toast(e.message, "err"); }
-    }));
-    bar.appendChild(btn("刷新", () => PAGES.mcp()));
-  } else if (page === "plugins") {
-    bar.appendChild(btn("重新加载", async () => {
-      try { await api("/api/plugins", { method: "POST", body: { action: "reload" } });
-        toast("已重载", "ok"); PAGES.plugins(); } catch (e) { toast(e.message, "err"); }
     }));
   } else if (page === "workflows") {
     bar.appendChild(btn("新建流程", () => workflowEdit(null), "primary"));
@@ -2255,16 +2254,36 @@ function renderTopActions(page) {
     }));
   } else if (page === "jobs") {
     bar.appendChild(btn("新建任务", () => jobEdit(null), "primary"));
-    bar.appendChild(btn("刷新", () => PAGES.jobs()));
-  } else if (page === "remote") {
-    bar.appendChild(btn("添加主机", () => remoteEdit(null), "primary"));
-    bar.appendChild(btn("刷新", () => PAGES.remote()));
   } else if (page === "stats") {
     bar.appendChild(btn("查看审计", () => go("audit")));
-    bar.appendChild(btn("刷新", () => PAGES.stats()));
-  } else if (page === "audit") {
-    bar.appendChild(btn("刷新", () => PAGES.audit()));
   }
+}
+
+/** 把刚构建的页面级按钮搬进内容容器顶部（1.4.0）。
+    host 可以是选择器字符串，也可以直接是元素。
+    ★ 必须在页面渲染**之后**调用，否则会被 el.innerHTML 覆盖掉。
+    ★ 没有按钮时也要清理上一次留下的那一行，不然切页会看到上一页的残留按钮。
+    ★ 插入位置：优先第一个 .card 之前；只有标题时不抢在标题上面。 */
+function mountTopActions(host) {
+  const bar = $("#top-actions");
+  const el = (typeof host === "string") ? $(host) : host;
+  if (!bar || !el) return;
+  const list = Array.from(bar.children);
+  el.querySelectorAll(":scope > .page-actions").forEach((n) => n.remove());
+  bar.innerHTML = "";
+  bar.classList.remove("has-chat-actions");
+  if (!list.length) return;
+  const wrap = document.createElement("div");
+  wrap.className = "page-actions";
+  list.forEach((b) => wrap.appendChild(b));
+  const firstCard = el.querySelector(":scope > .card");
+  if (firstCard) { el.insertBefore(wrap, firstCard); return; }
+  let after = null;
+  for (const n of el.children) {
+    if (n.tagName === "H2" || n.classList.contains("sec-desc") || n.classList.contains("sec-title")) after = n;
+  }
+  if (after) after.parentNode.insertBefore(wrap, after.nextSibling);
+  else el.insertBefore(wrap, el.firstChild);
 }
 
 /* ==========================================================================
@@ -2654,8 +2673,8 @@ async function newSession() {
     });
     S.sessionId = r.session.session_id || r.session.id;
     setPane(S.sessionId);          // 新会话有自己的消息容器（空白）
-    const defaultPerm = (() => { try { return localStorage.getItem("fengcode_default_permission") || "ask"; } catch (e) { return "ask"; } })();
-    CUR_PERM = ["deny", "ask", "allow"].includes(defaultPerm) ? defaultPerm : "ask";
+    const defaultPerm = (() => { try { return localStorage.getItem("fengcode_default_permission") || "workspace"; } catch (e) { return "workspace"; } })();
+    CUR_PERM = PERMS.some((p) => p.id === defaultPerm) ? defaultPerm : "workspace";
     try { localStorage.setItem("fengcode_perm", CUR_PERM); } catch (e) {}
     paintPermChip();
     clearMessages();
@@ -2828,7 +2847,6 @@ function openFirstRunWizard() {
     if (step === 0) {
       mask.innerHTML = `<div class="modal" style="max-width:520px">
         <h3>欢迎使用 Fengcode</h3>
-        <div class="sec-desc">它会读写文件、执行命令、访问网络——真的动手，不只是聊天。</div>
         <div style="border:1px solid var(--border);border-radius:9px;padding:12px 14px;margin:12px 0;font-size:12.5px;line-height:1.9">
           <div>• 所有数据存在本机，模型供应商由你自己配</div>
           <div>• 有审批门、路径白名单、沙箱三道防护</div>
@@ -2845,9 +2863,7 @@ function openFirstRunWizard() {
       const ready = models.filter((m) => m.has_key).length;
       mask.innerHTML = `<div class="modal" style="max-width:520px">
         <h3>配置模型</h3>
-        <div class="sec-desc">${hasKey
-          ? "检测到已有可用模型，可以直接开始。"
-          : "还没有可用的模型密钥，先填一个才能对话。"}</div>
+        ${hasKey ? "" : `<div class="sec-desc">还没有可用的模型密钥，先填一个才能对话。</div>`}
         <div style="border:1px solid var(--border);border-radius:9px;padding:12px 14px;margin:12px 0">
           ${hasKey
             ? `<span class="tag ok">已就绪</span><span style="font-size:12.5px;margin-left:6px">共 ${ready} 个模型可用</span>`
@@ -2865,13 +2881,14 @@ function openFirstRunWizard() {
 
     mask.innerHTML = `<div class="modal" style="max-width:520px">
       <h3>权限等级</h3>
-      <div class="sec-desc">控制它能自己改哪些地方，之后可在设置里随时改。</div>
+      <div class="sec-desc">控制它能自己改哪些地方。</div>
       <div style="margin:12px 0">
-        ${[["deny", "只看不改", "只读取查看，任何写操作都被拒绝"],
-           ["ask", "工作区可改", "工作区内直接改，越界会先问你（推荐）"],
-           ["allow", "完全权限", "全部放行，不再逐条确认"]].map(([v, t, ds]) => `
+        ${[["deny", "只读", "可以读取和查看，任何写操作都被拒绝"],
+           ["ask", "询问", "每次写操作执行前都问你一次"],
+           ["workspace", "工作区放行", "工作区里直接改，越界或危险操作才问你（推荐）"],
+           ["allow", "完全权限", "所有操作都放行，不再逐条确认"]].map(([v, t, ds]) => `
           <label style="display:flex;gap:9px;align-items:flex-start;padding:9px 11px;border:1px solid var(--border);border-radius:9px;margin-bottom:7px;cursor:pointer">
-            <input type="radio" name="frw-perm" value="${v}"${v === "ask" ? " checked" : ""} style="width:auto;margin-top:3px">
+            <input type="radio" name="frw-perm" value="${v}"${v === "workspace" ? " checked" : ""} style="width:auto;margin-top:3px">
             <span><b style="font-size:13px">${t}</b>
               <div class="help" style="margin-top:2px">${ds}</div></span>
           </label>`).join("")}
@@ -3975,7 +3992,18 @@ function handleEvent(ev, c) {
         wrap.className = "msg-wrap reasoning-wrap";
         // 流式期间默认折叠：思考是大段英文/长文时不再把正文挤到看不见
         wrap.innerHTML = `<details class="reasoning reasoning-live"><summary><span class="rtitle">思考中…</span><span class="rdur">0.0s</span><span class="rlive-preview"></span><span class="rhint rhint-toggle">点击展开</span></summary><div class="rc"></div></details>`;
-        msgBox().appendChild(wrap);
+        // ★★★ 本轮**第一段**思考必须插在正文气泡（占位气泡）**之前**。
+        //   旧写法无条件 appendChild 到末尾，而占位气泡是在 send() 开头就先建的
+        //   —— 流式期间顺序成了「正文 → 思考」，思考反被顶在输出最底部，
+        //   直到 result 收尾时才被 insertBefore 挪回顶部
+        //   （实测：思考一直贴在输出下面，输出完才刷新到最上面）。
+        //   判据用「本轮有没有调过工具」：调过说明时间线已推进，新思考应落在
+        //   工具卡之后，保持「思考 → 工具 → 思考」的先后顺序。
+        const hostContent = (!Object.keys(c.toolTimes || {}).length) ? (c.assist || c.pending) : null;
+        const hostWrap = (hostContent && hostContent.isConnected)
+          ? hostContent.closest(".msg-wrap") : null;
+        if (hostWrap && hostWrap.parentNode) hostWrap.parentNode.insertBefore(wrap, hostWrap);
+        else msgBox().appendChild(wrap);
         c.reasoning = wrap.querySelector(".rc");
         c.reasoningBox = wrap;
       } else {
@@ -4322,7 +4350,17 @@ function handleEvent(ev, c) {
       }
       if (c.assist) {
         const m = c.assist.closest(".msg");
-        if (m) m.classList.remove("streaming", "pending");
+        if (m) {
+          // ★★ 一并把「生成中」改成「已完成」（1.4.0 修）。
+          //   旧写法只摘掉 streaming 类、不动 meta，而收尾兜底 finalizeTurnBubbles
+          //   是**按 .msg.streaming 找目标**的 —— 类一摘它就再也找不到这条，
+          //   于是「生成中」永久留在思考过程下面（实测）。
+          //   只改占位文案，绝不覆盖「3 步 · 12K tokens · 8s」这类真实结果信息。
+          const meta = $(".meta", m);
+          const cur = meta ? (meta.textContent || "").trim() : "";
+          if (meta && (!cur || cur === "生成中" || cur === "正在回复…")) meta.textContent = "已完成";
+          m.classList.remove("streaming", "pending");
+        }
       }
       // ★ 完成回执卡：把「这轮改了什么、验证没验证、还差什么」摆给用户看。
       //   放在结果分支里（result 一定带着本回合的完整执行记录）。
@@ -5217,7 +5255,7 @@ PAGES.memory = async () => {
   const renderList = (items, archivedView) => {
     if (!items.length) {
       listEl.innerHTML = `<div class="empty">${archivedView
-        ? "没有归档的记忆。归档用于把过时但仍有参考价值的内容收起来。"
+        ? "没有归档的记忆。归档用于把过时但仍有保留价值的内容收起来。"
         : "还没有记忆。当你告诉我偏好或重要背景时，我会记下来。"}</div>`;
       return;
     }
@@ -5745,8 +5783,30 @@ PAGES.subagents = async () => {
   });
 };
 
-PAGES.skills = async () => {
-  const el = $("#page-skills");
+/* ==========================================================================
+   扩展页的三个区块（技能 / 插件 / MCP）
+   ---------------------------------------------------------------------
+   ★★★ 1.4.0 整合后出现的坑：`skillCreate()` / `mcpEdit()` 这类**弹窗**保存后会调
+     `PAGES.skills()` / `PAGES.mcp()`（不带参数），而那时页面的真实落点已经变成
+     「扩展」页里的 `#ext-skills` / `#ext-mcp`。若退回旧的 `#page-skills`，
+     重渲染会写进一个**看不见的容器** —— 表现就是「保存了但列表没变」。
+     所以这里统一解析落点：先看扩展页那一块在不在（在且可见就用它），
+     再退回本页自己的旧容器。
+   ========================================================================== */
+function extHost(kind, host, fallback) {
+  if (host) return host;
+  const ext = document.getElementById("page-extensions");
+  if (ext && ext.classList.contains("active")) {
+    const box = document.getElementById("ext-" + kind);
+    if (box) return box;
+  }
+  return $(fallback);
+}
+
+/** 技能区块。★ 1.4.0：接受容器参数 —— 「扩展」页把三个区块渲染进同一页，
+    此时 `$$("[data-*]")` 全局查询会把别页同名属性误绑到本页回调上
+    （技能/插件/MCP 都有 data-del），所以查询必须限定在**自己的容器**内。 */
+PAGES.skills = async (host) => {  const el = extHost("skills", host, "#page-skills");
   const d = await api("/api/skills");
   const items = d.skills || [];
   const srcMap = { builtin: "内置", user: "我自己建的" };
@@ -5774,30 +5834,30 @@ PAGES.skills = async () => {
           ${s.tags && s.tags.length ? `<span style="margin-left:auto;font-size:10.5px;color:var(--text-faint)">${s.tags.map(esc).join(" · ")}</span>` : ""}
         </div>
       </div>`).join("")}</div></div>`;
-  $$("[data-view]").forEach((b) => b.onclick = async () => {
+  $$("[data-view]", el).forEach((b) => b.onclick = async () => {
     try {
       const d = await api("/api/skills?name=" + encodeURIComponent(b.dataset.view));
       modal(d.skill.name, `<div style="font-size:12px;color:var(--text-dim);margin-bottom:9px">${esc(d.skill.path)}</div>
         <pre class="block">${esc(d.skill.body || "")}</pre>`);
     } catch (e) { toast(e.message, "err"); }
   });
-  $$("[data-tog]").forEach((b) => b.onclick = async () => {
+  $$("[data-tog]", el).forEach((b) => b.onclick = async () => {
     await api("/api/skills", { method: "POST", body: { action: "toggle", name: b.dataset.tog, enabled: Number(b.dataset.v) } });
-    PAGES.skills();
+    PAGES.skills(host);
   });
-  $$("[data-del]").forEach((b) => b.onclick = async () => {
+  $$("[data-del]", el).forEach((b) => b.onclick = async () => {
     if (!confirm(`删除技能「${b.dataset.del}」？`)) return;
     try { await api("/api/skills", { method: "POST", body: { action: "delete", name: b.dataset.del } });
-      toast("已删除", "ok"); PAGES.skills(); } catch (e) { toast(e.message, "err"); }
+      toast("已删除", "ok"); PAGES.skills(host); } catch (e) { toast(e.message, "err"); }
   });
-  const skNew = $("#sk-new");
+  const skNew = $("#sk-new", el);
   if (skNew) skNew.onclick = () => skillCreate();
-  const skRescan = $("#sk-rescan");
+  const skRescan = $("#sk-rescan", el);
   if (skRescan) skRescan.onclick = async () => {
     try {
       const r = await api("/api/skills", { method: "POST", body: { action: "reload" } });
       toast(`扫描到 ${r.count} 个技能`, "ok");
-      PAGES.skills();
+      PAGES.skills(host);
     } catch (e) { toast(e.message, "err"); }
   };
 };
@@ -5806,8 +5866,7 @@ function skillCreate() {
     <div class="field"><label>技能名称</label><input type="text" id="sk-name" placeholder="如：周报生成"></div>
     <div class="field"><label>一句话说明（用于自动匹配）</label><input type="text" id="sk-desc" placeholder="如：把本周工作整理成周报"></div>
     <div class="field"><label>正文（可用 Markdown；留空则生成模板）</label>
-      <textarea id="sk-body" class="mono" rows="10" placeholder="---&#10;name: 周报生成&#10;description: ...&#10;---&#10;&#10;# 步骤&#10;1. ..."></textarea>
-      <div class="help">frontmatter 里的 name/description 决定匹配效果</div></div>`,
+      <textarea id="sk-body" class="mono" rows="10" placeholder="---&#10;name: 周报生成&#10;description: ...&#10;---&#10;&#10;# 步骤&#10;1. ..."></textarea></div>`,
     `<button class="btn" data-close>取消</button><button class="btn primary" id="sk-save">创建</button>`);
   $("#sk-save").onclick = async () => {
     const name = $("#sk-name").value.trim();
@@ -5855,8 +5914,9 @@ PAGES.tools = async () => {
 /* ==========================================================================
    MCP 页
    ========================================================================== */
-PAGES.mcp = async () => {
-  const el = $("#page-mcp");
+/** MCP 区块。★ 1.4.0：接受容器参数并**限定查询范围** —— 见 PAGES.skills 的说明。 */
+PAGES.mcp = async (host) => {
+  const el = extHost("mcp", host, "#page-mcp");
   const d = await api("/api/mcp");
   const st = {};
   (d.servers || []).forEach((s) => st[s.name] = s);
@@ -5870,7 +5930,14 @@ PAGES.mcp = async () => {
         <span class="spacer"></span>
         <button class="btn sm primary" data-imp="${esc(c.path)}">导入</button></div>`).join("")}
     </div>` : ""}
-    <div class="card"><h3>已配置服务（${cfg.length}）<span class="hint">MCP 让 Fengcode 接入外部工具生态</span></h3>
+    <div class="card"><h3>已配置服务（${cfg.length}）</h3>
+      <!-- ★ 1.4.0：这些按钮原先挂在顶栏，顶栏不再承载页面级按钮，移进卡片里 -->
+      <div class="row" style="margin-bottom:12px">
+        <button class="btn primary" id="mcp-add">添加服务</button>
+        <button class="btn" id="mcp-import">从配置导入</button>
+        <button class="btn" id="mcp-startall">全部启动</button>
+        <button class="btn" id="mcp-reload">刷新</button>
+      </div>
       ${cfg.length ? `<table><thead><tr><th style="width:150px">名称</th><th style="width:70px">类型</th><th>目标</th>
         <th style="width:90px">状态</th><th style="width:70px">工具</th><th style="width:230px"></th></tr></thead><tbody>
         ${cfg.map((s) => {
@@ -5904,14 +5971,31 @@ PAGES.mcp = async () => {
         <div style="margin-bottom:8px"><span class="tag accent">${esc(s.name)}</span>
         <span style="font-size:12px;color:var(--text-soft);margin-left:8px">${(s.tools || []).map((t) => `<span class="mono" style="margin-right:8px">${esc(t)}</span>`).join("")}</span></div>` : "").join("")}
     </div>` : ""}`;
-  $$("[data-imp]").forEach((b) => b.onclick = async () => {
+  // ★ 1.4.0：卡片内按钮（原顶栏那组的落点）
+  const mAdd = $("#mcp-add", el);
+  if (mAdd) mAdd.onclick = () => mcpEdit();
+  const mImp = $("#mcp-import", el);
+  if (mImp) mImp.onclick = () => importMcp();
+  const mAll = $("#mcp-startall", el);
+  if (mAll) mAll.onclick = async () => {
+    try {
+      const dd = await api("/api/mcp");
+      for (const s of (dd.configured || [])) {
+        if (s.enabled) { try { await api("/api/mcp", { method: "POST", body: { action: "start", name: s.name } }); } catch (e) {} }
+      }
+      toast("已启动全部服务", "ok"); PAGES.mcp(host);
+    } catch (e) { toast(e.message, "err"); }
+  };
+  const mRl = $("#mcp-reload", el);
+  if (mRl) mRl.onclick = () => PAGES.mcp(host);
+  $$("[data-imp]", el).forEach((b) => b.onclick = async () => {
     try {
       const r = await api("/api/mcp", { method: "POST", body: { action: "import_file", path: b.dataset.imp } });
       toast(`导入 ${r.added.length} 个服务${r.errors && r.errors.length ? "（有警告）" : ""}`, "ok");
-      PAGES.mcp();
+      PAGES.mcp(host);
     } catch (e) { toast(e.message, "err"); }
   });
-  $$("[data-test]").forEach((b) => b.onclick = async () => {
+  $$("[data-test]", el).forEach((b) => b.onclick = async () => {
     b.textContent = "测试中…"; b.disabled = true;
     try {
       const r = await api("/api/mcp", { method: "POST", body: { action: "test", name: b.dataset.test } });
@@ -5919,22 +6003,22 @@ PAGES.mcp = async () => {
       else toast("失败：" + (r.error || ""), "err");
     } catch (e) { toast(e.message, "err"); }
     b.textContent = "测试"; b.disabled = false;
-    PAGES.mcp();
+    PAGES.mcp(host);
   });
-  $$("[data-start]").forEach((b) => b.onclick = async () => {
+  $$("[data-start]", el).forEach((b) => b.onclick = async () => {
     b.textContent = "启动中…"; b.disabled = true;
     try { await api("/api/mcp", { method: "POST", body: { action: "start", name: b.dataset.start } }); toast("已启动", "ok"); }
     catch (e) { toast("启动失败：" + e.message, "err"); }
-    PAGES.mcp();
+    PAGES.mcp(host);
   });
-  $$("[data-stop]").forEach((b) => b.onclick = async () => {
+  $$("[data-stop]", el).forEach((b) => b.onclick = async () => {
     await api("/api/mcp", { method: "POST", body: { action: "stop", name: b.dataset.stop } });
-    PAGES.mcp();
+    PAGES.mcp(host);
   });
-  $$("[data-del]").forEach((b) => b.onclick = async () => {
+  $$("[data-del]", el).forEach((b) => b.onclick = async () => {
     if (!confirm(`移除 MCP 服务「${b.dataset.del}」？`)) return;
     await api("/api/mcp", { method: "POST", body: { action: "delete", name: b.dataset.del } });
-    toast("已移除", "ok"); PAGES.mcp();
+    toast("已移除", "ok"); PAGES.mcp(host);
   });
 };
 function mcpEdit() {
@@ -5990,15 +6074,16 @@ async function importMcp() {
   try {
     const d = await api("/api/mcp", { method: "GET" });
     toast(`导入 ${d.mcp_added.length} 个 MCP 服务`, "ok");
-    PAGES.mcp();
+    PAGES.extensions();
   } catch (e) { toast(e.message, "err"); }
 }
 
 /* ==========================================================================
    插件页
    ========================================================================== */
-PAGES.plugins = async () => {
-  const el = $("#page-plugins");
+/** 插件区块。★ 1.4.0：接受容器参数并**限定查询范围** —— 见 PAGES.skills 的说明。 */
+PAGES.plugins = async (host) => {
+  const el = extHost("plugins", host, "#page-plugins");
   const d = await api("/api/plugins");
   const items = d.plugins || [];
   const panels = d.panels || [];
@@ -6026,7 +6111,7 @@ PAGES.plugins = async () => {
               : `<button class="btn sm ghost" data-on="${esc(p.name)}">启用</button>`}
             ${!p.builtin
               ? `<button class="btn sm ghost danger" data-del="${esc(p.name)}">卸载</button>`
-              : '<span class="hint" title="内置插件随程序自带，删掉会影响内置能力，所以只允许停用；自己新建或安装的插件可以卸载。">内置 · 不可卸载</span>'}
+              : ``}
           </td></tr>`).join("")}</tbody></table>`
         : `<div class="empty"><div class="big">${icon("puzzle", 34)}</div>还没有插件。点「新建插件」就能建一个。</div>`}
     </div>
@@ -6034,7 +6119,8 @@ PAGES.plugins = async () => {
       <div class="row">${panels.map((p) => `<button class="btn" data-panel="${esc(p.url)}">${esc(p.title || p.id)}</button>`).join("")}</div>
     </div>` : ""}`;
 
-  $("#plug-new").onclick = () => {
+  const newBtn = $("#plug-new", el);
+  if (newBtn) newBtn.onclick = () => {
     modal("新建插件", `
       <div class="field"><label>插件名字</label>
         <input type="text" id="np-name" placeholder="例如：我的工具"></div>
@@ -6056,16 +6142,17 @@ PAGES.plugins = async () => {
         if (!r.ok) return toast(r.error || "创建失败", "err");
         closeModal();
         toast("已创建，改 plugin.py 加功能");
-        PAGES.plugins();
+        PAGES.plugins(host);
       } catch (e) { toast(e.message, "err"); }
     };
   };
-  $("#plug-install").onclick = () => {
+  const insBtn = $("#plug-install", el);
+  if (insBtn) insBtn.onclick = () => {
     modal("从文件夹安装", `
       <div class="field"><label>插件目录的完整路径</label>
         <input type="text" id="pi-path" placeholder="D:\\my-plugin"></div>
       <div class="help" style="margin-top:9px">
-        这个目录里要有 manifest.yaml。安装后会复制到插件目录。
+        这个目录里要有 manifest.yaml。
       </div>`,
       `<button class="btn" data-close>取消</button>
        <button class="btn primary" id="pi-ok">安装</button>`);
@@ -6077,30 +6164,71 @@ PAGES.plugins = async () => {
           action: "install", path: p, overwrite: true,
         }});
         if (r && r.ok === false) return toast(r.error || "安装失败", "err");
-        closeModal(); toast("已安装"); PAGES.plugins();
+        closeModal(); toast("已安装"); PAGES.plugins(host);
       } catch (e) { toast(e.message, "err"); }
     };
   };
-  $("#plug-reload").onclick = async () => {
+  const rlBtn = $("#plug-reload", el);
+  if (rlBtn) rlBtn.onclick = async () => {
     try { await api("/api/plugins", { method: "POST", body: { action: "reload" } });
-      toast("已重新加载"); PAGES.plugins(); } catch (e) { toast(e.message, "err"); }
+      toast("已重新加载"); PAGES.plugins(host); } catch (e) { toast(e.message, "err"); }
   };
-  $$("[data-on]").forEach((b) => b.onclick = async () => {
+  $$("[data-on]", el).forEach((b) => b.onclick = async () => {
     try { await api("/api/plugins", { method: "POST", body: { action: "enable", name: b.dataset.on } });
-      toast("已启用", "ok"); PAGES.plugins(); } catch (e) { toast(e.message, "err"); }
+      toast("已启用", "ok"); PAGES.plugins(host); } catch (e) { toast(e.message, "err"); }
   });
-  $$("[data-off]").forEach((b) => b.onclick = async () => {
+  $$("[data-off]", el).forEach((b) => b.onclick = async () => {
     await api("/api/plugins", { method: "POST", body: { action: "disable", name: b.dataset.off } });
-    PAGES.plugins();
+    PAGES.plugins(host);
   });
-  $$("[data-del]").forEach((b) => b.onclick = async () => {
+  $$("[data-del]", el).forEach((b) => b.onclick = async () => {
     if (!confirm(`卸载插件「${b.dataset.del}」？目录会被删除。`)) return;
     try { await api("/api/plugins", { method: "POST", body: { action: "uninstall", name: b.dataset.del } });
-      toast("已卸载", "ok"); PAGES.plugins(); } catch (e) { toast(e.message, "err"); }
+      toast("已卸载", "ok"); PAGES.plugins(host); } catch (e) { toast(e.message, "err"); }
   });
-  $$("[data-panel]").forEach((b) => b.onclick = () => {
+  $$("[data-panel]", el).forEach((b) => b.onclick = () => {
     modal("插件面板", `<iframe src="${esc(b.dataset.panel)}" style="width:100%;height:60vh;border:1px solid var(--border);border-radius:8px"></iframe>`);
   });
+};
+
+/* ==========================================================================
+   「扩展」页（1.4.0 整合）
+   ---------------------------------------------------------------------
+   ★ 为什么整合：技能、插件、MCP 服务本质是同一件事的三个入口 ——
+     「给这个 agent 加能力」。分三页时用户得先记住「我要加的是哪种」，
+     再翻到对应页；合成一页后逐块往下看即可，也便于统一「重新加载」。
+   ★ 三块仍各自复用原有渲染函数（传自己的容器），事件与状态都不变。
+   ========================================================================== */
+PAGES.extensions = async () => {
+  const el = $("#page-extensions");
+  el.innerHTML = `
+    <div class="card"><h3>扩展<span class="hint">技能、插件与 MCP 服务</span></h3>
+      <div class="help">
+        技能、插件与 MCP 服务，改完都要重新加载才会在当前会话生效。
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn" id="ext-reload">重新加载全部</button>
+        <span class="hint">下一轮对话开始使用新配置</span>
+      </div>
+    </div>
+    <div id="ext-skills"></div>
+    <div id="ext-plugins"></div>
+    <div id="ext-mcp"></div>`;
+  const rl = $("#ext-reload", el);
+  if (rl) rl.onclick = async () => {
+    rl.disabled = true;
+    const out = [];
+    try { const r = await api("/api/skills", { method: "POST", body: { action: "reload" } });
+      out.push(`技能 ${r.count}`); } catch (e) {}
+    try { await api("/api/plugins", { method: "POST", body: { action: "reload" } });
+      out.push("插件已重载"); } catch (e) {}
+    toast(out.length ? "已重载：" + out.join(" · ") : "重载完成", "ok");
+    rl.disabled = false;
+    PAGES.extensions();
+  };
+  await PAGES.skills($("#ext-skills", el));
+  await PAGES.plugins($("#ext-plugins", el));
+  await PAGES.mcp($("#ext-mcp", el));
 };
 
 /* ==========================================================================
@@ -6154,8 +6282,7 @@ function workflowEdit(w) {
     <div class="field"><label>说明</label><input type="text" id="wf-desc" value="${esc(w.description || "")}"></div>
     <div class="field"><label>DAG 定义（JSON）</label>
       <textarea id="wf-dag" class="mono" rows="14">${esc(dagText)}</textarea>
-      <div class="help">每个 step 需要 id 与 kind（prompt/agent/tool/shell/merge）；用 depends_on 声明依赖；
-        在 prompt 里用 {{step_id}} 引用上游输出</div></div>
+      <div class="help">每个 step 需要 id 与 kind，用 depends_on 声明依赖</div></div>
     <div class="field"><label>试运行前先校验</label>
       <button class="btn sm" id="wf-val">校验 DAG</button> <span id="wf-val-result" style="font-size:12px"></span></div>`,
     `<button class="btn" data-close>取消</button><button class="btn primary" id="wf-save">保存</button>`);
@@ -6190,7 +6317,7 @@ PAGES.jobs = async () => {
   const jobs = d.jobs || [];
   el.innerHTML = `
     <div class="card"><h3>调度器${d.enabled ? '<span class="tag ok">已启用</span>' : '<span class="tag warn">未启用</span>'}
-      <span class="hint">在设置里可开启调度器；任务到点后自动执行</span></h3></div>
+      <span class="hint">任务到点后自动执行</span></h3></div>
     <div class="card"><h3>定时任务（${jobs.length}）</h3>
     ${jobs.length ? `<table><thead><tr><th style="width:170px">名称</th><th style="width:150px">调度</th>
       <th style="width:70px">类型</th><th style="width:140px">上次运行</th><th>结果</th><th style="width:170px"></th></tr></thead><tbody>
@@ -6253,7 +6380,7 @@ function jobEdit(j) {
     </select></div>
     <div class="field"><label>载荷（JSON）</label>
       <textarea id="j-payload" class="mono" rows="4">${esc(JSON.stringify(j.payload || {}, null, 2))}</textarea>
-      <div class="help">prompt: {"prompt":"…"}　tool: {"tool":"名称","arguments":{}}　shell: {"command":"…"}　workflow: {"workflow_id":"…"}</div></div>
+      <div class="help">prompt / tool / shell / workflow 四种，载荷按类型填</div></div>
     <label class="switch"><input type="checkbox" id="j-enabled"${j.enabled ? " checked" : ""}> 启用</label>`,
     `<button class="btn" data-close>取消</button><button class="btn primary" id="j-save">保存</button>`);
   $("#j-save").onclick = async () => {
@@ -6280,10 +6407,9 @@ PAGES.remote = async () => {
   const d = await api("/api/remote");
   const hosts = d.hosts || [];
   el.innerHTML = `<div class="card"><h3>远程主机（${hosts.length}）
-    <span class="hint">配置后我可以在服务器上执行命令、看日志、传文件</span></h3>
+    <span class="hint">接入别的机器</span></h3>
     <div class="row" style="margin-bottom:12px">
       <button class="btn primary" id="remote-add">添加主机</button>
-      <button class="btn" id="remote-refresh">刷新</button>
     </div>
     ${hosts.length ? `<table><thead><tr><th style="width:150px">名称</th><th>地址</th><th style="width:100px">用户</th>
       <th style="width:100px">认证</th><th style="width:150px"></th></tr></thead><tbody>
@@ -6297,6 +6423,9 @@ PAGES.remote = async () => {
           <button class="btn sm ghost danger" data-del="${esc(h.name)}">删除</button>
         </td></tr>`).join("")}</tbody></table>`
       : `<div class="empty"><div class="big">${icon("server", 34)}</div>还没有远程主机</div>`}
+  </div>
+  <div class="card" id="lan-card"><h3>手机访问<span class="hint">同一个网络里用手机打开</span></h3>
+    <div id="lan-body"><div class="help">读取中…</div></div>
   </div>`;
   $$("[data-test]").forEach((b) => b.onclick = async () => {
     b.textContent = "连接中…"; b.disabled = true;
@@ -6311,8 +6440,87 @@ PAGES.remote = async () => {
     PAGES.remote();
   });
   onClick("#remote-add", () => remoteEdit(null));
-  onClick("#remote-refresh", () => PAGES.remote());
+  await renderLanPanel($("#lan-body"));
 };
+
+/* ---- 手机访问（局域网）面板 -------------------------------------------
+   ★ 真的会开一个监听 0.0.0.0 的服务，所以要点「开启」才生效；关闭即释放端口。
+   ★ 复制链接与二维码都带上配对令牌 —— 局域网里任何设备都能连到这个端口，
+     没令牌就是把这个 agent 敞开给同网段的其他人。 */
+async function renderLanPanel(box) {
+  if (!box) return;
+  let d;
+  try { d = await api("/api/lan"); } catch (e) {
+    box.innerHTML = `<div class="help">读取失败：${esc(e.message)}</div>`;
+    return;
+  }
+  const on = !!d.enabled;
+  const ips = d.ips || [];
+  const ipOpts = ips.map((x, i) =>
+    `<option value="${esc(x.ip)}"${i === 0 ? " selected" : ""}>${esc(x.ip)} · ${esc(x.name)}</option>`).join("");
+  box.innerHTML = `
+    <div class="row" style="margin-bottom:10px">
+      <label class="switch" style="flex:none"><input type="checkbox" id="lan-on"${on ? " checked" : ""}>
+        允许手机访问</label>
+      <span class="spacer"></span>
+      <span class="tag ${on ? "ok" : ""}">${on ? "已开启" : "已关闭"}</span>
+    </div>
+    <div class="help" style="margin-bottom:10px">
+      手机和这台电脑在同一个网络里，扫码后能看会话、发消息、批准操作。关闭会立刻断开所有手机。
+    </div>
+    ${on ? `
+      <div class="grid c2" style="margin-bottom:10px">
+        <div class="field"><label>网络地址</label>
+          <select id="lan-ip">${ipOpts || `<option value="">（未找到局域网地址）</option>`}</select></div>
+        <div class="field"><label>端口</label>
+          <input type="number" id="lan-port" value="${d.port || ""}" placeholder="自动"></div>
+      </div>
+      <div class="row" style="gap:14px;align-items:flex-start;flex-wrap:nowrap">
+        <div class="lan-qr">${d.qr || `<div class="help" style="padding:20px">二维码不可用，请用右侧链接</div>`}</div>
+        <div style="flex:1;min-width:0">
+          <div class="sr-title" style="margin-bottom:4px">用手机相机扫码</div>
+          <div class="help" style="margin-bottom:8px">
+            链接包含本次配对令牌，别转发给他人；关闭后令牌失效。
+          </div>
+          <div class="mono" style="font-size:11.5px;word-break:break-all;padding:7px 9px;
+               background:var(--bg-sunken);border-radius:8px;border:1px solid var(--border)">${esc(d.url || "")}</div>
+          <div class="row" style="margin-top:8px">
+            <button class="btn sm" id="lan-copy">复制链接</button>
+            <button class="btn sm" id="lan-refresh">刷新</button>
+          </div>
+        </div>
+      </div>
+      ${d.error ? `<div class="perm-warn" style="margin-top:10px"><div class="pw-item">${esc(d.error)}</div></div>` : ""}
+    ` : `
+      <div class="help">开启后会在这台电脑上另开一个只对局域网开放的服务，端口自动选择。</div>
+      ${d.error ? `<div class="perm-warn" style="margin-top:10px"><div class="pw-item">${esc(d.error)}</div></div>` : ""}
+    `}`;
+
+  const sw = $("#lan-on", box);
+  if (sw) sw.onchange = async () => {
+    sw.disabled = true;
+    try {
+      const r = await api("/api/lan", { method: "POST", body: {
+        action: sw.checked ? "on" : "off",
+        host: ($("#lan-ip", box) || {}).value || "",
+        port: Number(($("#lan-port", box) || {}).value) || 0,
+      }});
+      if (r && r.error) toast(r.error, "err");
+      else toast(sw.checked ? "手机访问已开启" : "手机访问已关闭", "ok");
+    } catch (e) { toast(e.message, "err"); }
+    await renderLanPanel(box);
+  };
+  const cp = $("#lan-copy", box);
+  if (cp) cp.onclick = async () => {
+    try {
+      if (navigator.clipboard) await navigator.clipboard.writeText(d.url || "");
+      else if (window.fengcode && window.fengcode.copy) await window.fengcode.copy(d.url || "");
+      toast("链接已复制", "ok");
+    } catch (e) { toast("复制失败，手动选中上面的链接即可", "err"); }
+  };
+  const rf = $("#lan-refresh", box);
+  if (rf) rf.onclick = () => renderLanPanel(box);
+}
 function remoteEdit() {
   modal("添加远程主机", `
     <div class="grid c2">
@@ -6347,6 +6555,220 @@ function remoteEdit() {
 /* ==========================================================================
    用量统计页
    ========================================================================== */
+/* ==========================================================================
+   存储页（1.4.0）
+   ---------------------------------------------------------------------
+   两块：① 占用统计 —— 让用户看清「谁在占空间」；② 目录位置 —— 可移动的能改，
+   不可移动的说清为什么。★ 移动后会写 config/paths.json，重启后生效。
+   ========================================================================== */
+PAGES.storage = async () => {
+  const el = $("#page-storage");
+  const d = await api("/api/storage");
+  const items = d.items || [];
+  const disk = d.disk || {};
+  const maxB = Math.max(1, ...items.map((x) => x.bytes || 0));
+  const gb = (n) => (n / 1024 / 1024 / 1024).toFixed(1);
+  const size = (n) => {
+    if (!n) return "0 B";
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+    if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + " MB";
+    return (n / 1024 / 1024 / 1024).toFixed(2) + " GB";
+  };
+  el.innerHTML = `
+    <div class="card"><h3>占用</h3>
+      ${items.map((x) => {
+        const pct = Math.max(1, Math.round(((x.bytes || 0) / maxB) * 100));
+        return `<div style="margin-bottom:11px">
+          <div class="row" style="align-items:baseline">
+            <span style="font-size:12.5px">${esc(x.label)}</span>
+            <span class="spacer"></span>
+            <span class="mono" style="font-size:11.5px;color:var(--text-dim)">${size(x.bytes)} · ${fmtNum(x.files)} 个文件</span>
+          </div>
+          <div style="height:6px;border-radius:6px;background:var(--bg-sunken);margin-top:4px;overflow:hidden">
+            <i style="display:block;height:100%;width:${pct}%;background:var(--accent)"></i></div>
+        </div>`;
+      }).join("")}
+      ${disk.total ? `<div class="help" style="margin-top:6px">
+        所在磁盘：剩余 ${gb(disk.free)} GB / 共 ${gb(disk.total)} GB</div>` : ""}
+    </div>
+    <div class="card"><h3>位置<span class="hint">可移动的目录能换到别的磁盘</span></h3>
+      ${items.map((x) => `
+        <div class="set-row">
+          <div class="sr-main">
+            <div class="sr-title">${esc(x.label)}</div>
+            <div class="sr-desc">${esc(x.desc)}</div>
+            <div class="mono" style="font-size:11px;color:var(--text-faint);margin-top:3px;word-break:break-all">${esc(x.path)}</div>
+          </div>
+          <div class="sr-ctl">
+            ${x.movable
+              ? `<button class="btn sm" data-move="${esc(x.key)}">移动…</button>
+                 ${x.custom ? `<button class="btn sm ghost" data-reset="${esc(x.key)}">还原默认</button>` : ""}`
+              : `<span class="hint">不可移动</span>`}
+          </div>
+        </div>`).join("")}
+      <div class="help" style="margin-top:10px">
+        改完位置要重启 Fengcode 才会生效；数据本身会在移动时一起搬过去。
+      </div>
+    </div>`;
+
+  $$("[data-move]", el).forEach((b) => b.onclick = () => {
+    const it = items.find((x) => x.key === b.dataset.move) || {};
+    modal("移动目录", `
+      <div class="field"><label>把「${esc(it.label || "")}」移到哪里</label>
+        <input type="text" id="st-path" class="mono" value="${esc(it.path || "")}"></div>
+      <div class="help" style="margin-top:8px">
+        填目标目录的完整路径（不存在会自动创建）。目标目录里已有同名文件时会停下，不会覆盖。
+      </div>`,
+      `<button class="btn" data-close>取消</button><button class="btn primary" id="st-ok">开始移动</button>`);
+    $("#st-ok").onclick = async () => {
+      const p = $("#st-path").value.trim();
+      if (!p) return toast("填个路径", "err");
+      $("#st-ok").disabled = true;
+      try {
+        const r = await api("/api/storage", { method: "POST", body: { action: "move", key: it.key, path: p } });
+        closeModal();
+        toast(r.need_restart ? "已移动，重启后生效" : "已移动", "ok");
+        PAGES.storage();
+      } catch (e) { toast(e.message, "err"); $("#st-ok").disabled = false; }
+    };
+  });
+  $$("[data-reset]", el).forEach((b) => b.onclick = async () => {
+    const it = items.find((x) => x.key === b.dataset.reset) || {};
+    if (!confirm(`把「${it.label}」改回默认位置？\n内容不会自动搬回来，需要你自己确认。`)) return;
+    try {
+      await api("/api/storage", { method: "POST", body: { action: "reset", key: b.dataset.reset } });
+      toast("已还原，重启后生效", "ok"); PAGES.storage();
+    } catch (e) { toast(e.message, "err"); }
+  });
+};
+
+/* ==========================================================================
+   网络页（1.4.0）
+   ---------------------------------------------------------------------
+   三档出网方式 + 真实连通性测试。★ 以前项目里完全没有代理设置：httpx 只读进程
+   环境变量，而桌面端是自拉起子进程，用户改不了它的环境 ——「必须走代理」这件事
+   在界面上无处设置、也说不清为什么连不上。
+   ========================================================================== */
+PAGES.network = async () => {
+  const el = $("#page-network");
+  let d = {};
+  try { d = await api("/api/network"); } catch (e) {
+    el.innerHTML = `<div class="card"><div class="help">读取失败：${esc(e.message)}</div></div>`;
+    return;
+  }
+  const mode = d.mode || "system";
+  const seg = (v, t) => `<button class="seg-btn${mode === v ? " active" : ""}" data-mode="${v}">${t}</button>`;
+  el.innerHTML = `
+    <div class="card"><h3>出网方式<span class="hint">模型请求、MCP 服务与网页抓取都经此处</span></h3>
+      <div class="help" style="margin-bottom:10px">
+        配置错误通常表现为「聊天没反应」。建议先测试连接，它会指出中断在哪一环。
+      </div>
+      <div class="seg" id="net-mode">
+        ${seg("system", "跟随系统")}${seg("manual", "手动设置")}${seg("direct", "直连")}
+      </div>
+      <div class="help" style="margin-top:8px" id="net-mode-desc"></div>
+
+      <div id="net-manual" style="margin-top:14px">
+        <div class="grid c2">
+          <div class="field"><label>协议</label><select id="net-type">
+            <option value="http"${d.proxy_type === "http" ? " selected" : ""}>http</option>
+            <option value="https"${d.proxy_type === "https" ? " selected" : ""}>https</option>
+            <option value="socks5"${d.proxy_type === "socks5" ? " selected" : ""}>socks5</option>
+            <option value="socks5h"${d.proxy_type === "socks5h" ? " selected" : ""}>socks5h（远程解析域名）</option>
+          </select></div>
+          <div class="field"><label>端口</label>
+            <input type="number" id="net-port" value="${d.proxy_port || ""}" placeholder="如 7890"></div>
+        </div>
+        <div class="field"><label>服务器</label>
+          <input type="text" id="net-host" value="${esc(d.proxy_host || "")}" placeholder="如 127.0.0.1"></div>
+        <div class="grid c2">
+          <div class="field"><label>用户名（可选）</label>
+            <input type="text" id="net-user" value="${esc(d.proxy_user || "")}"></div>
+          <div class="field"><label>密码（可选）</label>
+            <input type="password" id="net-pass" placeholder="${d.has_pass ? "已保存，留空即不修改" : "可留空"}"
+              autocomplete="new-password"></div>
+        </div>
+        <div class="field"><label>这些地址直连</label>
+          <input type="text" id="net-noproxy" value="${esc(d.no_proxy || "")}"
+            placeholder="localhost, 127.0.0.1"></div>
+        <div class="help" style="margin-top:3px">密码位支持 <code>${"${VAR}"}</code> 引用环境变量，避免明文写进配置。</div>
+      </div>
+
+      <div class="field" style="margin-top:14px"><label>测试目标<span class="hint">留空则用默认探测地址</span></label>
+        <input type="text" id="net-test-url" value="${esc(d.test_url || "")}" placeholder="https://…"></div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn primary" id="net-save">保存</button>
+        <button class="btn" id="net-test">测试连接</button>
+      </div>
+      <div id="net-result" style="margin-top:10px"></div>
+      <div class="help" style="margin-top:8px">当前生效：${esc(d.effective || "未知")}</div>
+    </div>`;
+
+  const desc = $("#net-mode-desc", el);
+  const manual = $("#net-manual", el);
+  const paint = () => {
+    const cur = ($(".seg-btn.active", el) || {}).dataset ? $(".seg-btn.active", el).dataset.mode : mode;
+    if (desc) desc.textContent = cur === "system"
+      ? "使用这台电脑上已配置的代理环境变量；没有设置时即直连。"
+      : cur === "manual"
+        ? "所有出网请求都走下面这个代理。"
+        : "忽略系统里的代理设置，强制直连。";
+    if (manual) manual.style.display = cur === "manual" ? "" : "none";
+  };
+  $$(".seg-btn", el).forEach((b) => b.onclick = () => {
+    $$(".seg-btn", el).forEach((x) => x.classList.toggle("active", x === b));
+    paint();
+  });
+  paint();
+
+  const curMode = () => {
+    const a = $(".seg-btn.active", el);
+    return a ? a.dataset.mode : mode;
+  };
+  const result = $("#net-result", el);
+  const show = (html) => { if (result) result.innerHTML = html; };
+
+  const save = $("#net-save", el);
+  if (save) save.onclick = async () => {
+    save.disabled = true;
+    try {
+      const r = await api("/api/network", { method: "POST", body: {
+        action: "save",
+        mode: curMode(),
+        proxy_type: ($("#net-type", el) || {}).value || "http",
+        proxy_host: ($("#net-host", el) || {}).value || "",
+        proxy_port: Number(($("#net-port", el) || {}).value) || 0,
+        proxy_user: ($("#net-user", el) || {}).value || "",
+        proxy_pass: ($("#net-pass", el) || {}).value || "",
+        no_proxy: ($("#net-noproxy", el) || {}).value || "",
+        test_url: ($("#net-test-url", el) || {}).value || "",
+      }});
+      toast("已保存", "ok");
+      show(`<div class="help">已生效：${esc(r.effective || "")}</div>`);
+    } catch (e) { toast(e.message, "err"); }
+    save.disabled = false;
+  };
+
+  const test = $("#net-test", el);
+  if (test) test.onclick = async () => {
+    test.disabled = true; test.textContent = "测试中…";
+    show(`<div class="help">正在发起真实请求…</div>`);
+    try {
+      const r = await api("/api/network", { method: "POST", body: { action: "test" } });
+      if (r.ok) {
+        show(`<div class="approval-note" style="color:var(--text-soft)">
+          连接正常：<b>HTTP ${r.status}</b> · ${r.duration}s · 经 ${esc(r.via || "")}</div>`);
+      } else {
+        show(`<div class="perm-warn"><div class="pw-head">${icon("warning", 14)}连接失败</div>
+          <div class="pw-item">在「${esc(r.stage || "连接")}」这一环中断：${esc(r.error || "")}</div>
+          <div class="pw-item">目标：${esc(r.url || "")}</div></div>`);
+      }
+    } catch (e) { show(`<div class="perm-warn"><div class="pw-item">测试失败：${esc(e.message)}</div></div>`); }
+    test.disabled = false; test.textContent = "测试连接";
+  };
+};
+
 /* ==========================================================================
    关于页
    ========================================================================== */
@@ -6590,10 +7012,12 @@ PAGES.settings = async () => {
             : `<option value="">还没有可用的模型</option>`}</select></div>
       </div>
       <div class="card"><h3>模型服务（${providers.length}）<span class="hint">填好地址与密钥即可用</span></h3>
-        <div id="prov-list"></div>
-        <div class="row" style="margin-top:12px">
+        <!-- ★ 按钮必须放在列表**之前**（1.4.0 修）：旧写法在 #prov-list 之后，
+             供应商一多就要滚到整页最底部才点得到，找不着也够不着。 -->
+        <div class="row" style="margin-bottom:12px">
           <button class="btn primary" id="prov-add">添加供应商</button>
         </div>
+        <div id="prov-list"></div>
       </div>
     </div>
     <div id="set-agent" class="set-pane" style="display:none">
@@ -6637,7 +7061,8 @@ PAGES.settings = async () => {
           <button class="seg-btn${Math.abs((mem.compact_ratio||0.8)-0.85)<0.01 ? " active":""}" data-v="0.85">85%</button>
         </div>
         <div class="field" style="margin-top:10px"><label>自定义百分比</label>
-          <input type="number" id="a-compact" min="30" max="95" value="${Math.round((mem.compact_ratio || 0.8) * 100)}"> %</div>
+          <input type="number" id="a-compact" min="30" max="95" style="width:84px;flex:none"
+            value="${Math.round((mem.compact_ratio || 0.8) * 100)}"><span class="unit">%</span></div>
       </div>
 
       <div class="card"><h3>行为</h3>
@@ -6695,9 +7120,7 @@ PAGES.settings = async () => {
 
         <div class="card"><h3>召回<span class="hint">记忆怎么被挑出来给 AI 用</span></h3>
           <div class="help" style="margin-bottom:9px">
-            每轮对话都会从已有记忆里挑几条相关的交给 AI。下面是挑选规则：
-            「轮数」决定回看多久的对话，「条数」决定最多挑几条，
-            「最低分」是相关度门槛（设 0 等于不设门槛，任何记忆都可能被选中）。
+            每轮对话都会从已有记忆里挑几条相关的交给 AI。
           </div>
           <div class="grid c3">
             <div class="field"><label>短期记忆轮数<span class="hint">回看最近几轮对话</span></label>
@@ -6722,7 +7145,8 @@ PAGES.settings = async () => {
         <div id="perm-warn" class="perm-warn" hidden></div>
         <div class="field"><label>危险操作如何处理</label><select id="p-mode">
           <option value="deny"${perms.mode === "deny" ? " selected" : ""}>只读 —— 拒绝一切写操作</option>
-          <option value="ask"${perms.mode === "ask" ? " selected" : ""}>工作区可改 —— 工作区内直接改，越界需批准（推荐）</option>
+          <option value="ask"${perms.mode === "ask" ? " selected" : ""}>询问 —— 每次写操作都先问一次</option>
+          <option value="workspace"${!perms.mode || perms.mode === "workspace" ? " selected" : ""}>工作区放行 —— 工作区内直接改，越界需批准（推荐）</option>
           <option value="allow"${perms.mode === "allow" ? " selected" : ""}>完全权限 —— 全部放行，不再询问</option>
         </select></div>
         <div class="help" style="margin-top:8px">
@@ -6730,6 +7154,9 @@ PAGES.settings = async () => {
         </div>
         <label class="switch" style="margin-top:10px"><input type="checkbox" id="p-audit"${perms.audit_enabled !== false ? " checked" : ""}>
           记录审计日志</label>
+        <label class="switch" style="margin-top:8px"><input type="checkbox" id="p-protect"${(cfg.tools || {}).protect_stale_files !== false ? " checked" : ""}>
+          保护被改动的文件</label>
+        <div class="help" style="margin-top:3px">模型读过或写过的文件若之后被你或其他程序改过，整文件覆盖会被拒绝，要求重新读取。</div>
       </div>
       <div class="card"><h3>写路径白名单<span class="hint">每行一个</span></h3>
         <div class="help" style="margin-bottom:7px">支持 $WORKSPACE（当前工作区）、$HOME（用户目录）、$TMP（临时目录）</div>
@@ -6741,6 +7168,7 @@ PAGES.settings = async () => {
         <textarea id="p-deny" class="mono" rows="3">${esc((perms.deny_patterns || []).join("\n"))}</textarea>
       </div>
       <div class="card"><h3>执行命令的限制<span class="hint">Shell 与运行环境</span></h3>
+        <div class="approval-note">命令在本机直接执行：有超时、输出截断与进程树终止，但没有系统级隔离（本机 Windows 未启用操作系统沙箱）。上面「权限等级」决定哪些命令需要你批准。</div>
         <div class="field" style="margin-bottom:12px">
           <label>Shell 解释器</label>
           <select id="sb-shell">
@@ -6763,6 +7191,9 @@ PAGES.settings = async () => {
         </div>
         <label class="switch" style="margin-top:9px"><input type="checkbox" id="s-net"${(cfg.sandbox || {}).network !== false ? " checked" : ""}>
           允许它联网</label>
+        <label class="switch" style="margin-top:8px"><input type="checkbox" id="s-browser"${(cfg.tools || {}).browser !== false ? " checked" : ""}>
+          启用内置浏览器</label>
+        <div class="help" style="margin-top:3px">关掉后模型看不到网页工具，也就打不开网页；重新打开需重载运行时。</div>
       </div>
       <div class="card"><h3>文件工具写入范围<span class="hint">仅约束文件工具，不限制 Shell</span></h3>
         <div class="field">
@@ -6773,7 +7204,7 @@ PAGES.settings = async () => {
           <div class="help">工作区本身始终可写；额外目录在下面的白名单里加。</div>
         </div>
       </div>
-      <div class="card"><h3>细粒度规则<span class="hint">优先级 deny &gt; ask &gt; allow</span></h3>
+      <div class="card"><h3>细粒度规则</h3>
         <div class="help" style="margin-bottom:9px">
           格式：<code>tool:工具名</code>、<code>cmd:命令前缀</code>（如 <code>cmd:git *</code>）、
           <code>path:路径通配</code>（如 <code>path:**/.ssh/*</code>）、<code>risk:关键词</code>。
@@ -6884,7 +7315,7 @@ PAGES.settings = async () => {
           <div class="field"><label>端口</label><input type="number" id="u-port" value="${(cfg.server || {}).port || 7845}"></div>
           <div class="field"><label>访问密码<span class="hint">留空则谁都能连</span></label><input type="text" id="u-token" value="${esc((cfg.server || {}).token || "")}"></div>
         </div>
-        <div class="help">改端口或密码需要重启程序才生效。默认只监听 127.0.0.1，只有本机能连。</div>
+        <div class="help">改端口或密码需要重启程序才生效。</div>
       </div>
       <div class="card"><h3>直接改配置文件<span class="hint">高级用法，改错会导致启动失败</span></h3>
         <div class="help" id="raw-path"></div>
@@ -7202,7 +7633,7 @@ PAGES.settings = async () => {
     };
   }
 
-  // ---- 沙箱：探测本机 Shell 环境（对齐截图里的「运行环境检测」表格）----
+  // ---- 沙箱：探测本机 Shell 环境（对应「运行环境检测」表格）----
   fillSandboxProbe();
 
   // ---- 权限细粒度规则：三列（deny / ask / allow），可增删 ----
@@ -7405,7 +7836,12 @@ async function loadRecoveryGlobal() {
         network: chk("s-net"),
         bash: $("#sb-shell") ? val("sb-shell") : "auto",
       },
-      tools: { max_output_chars: Number(val("s-maxout")) || 60000 },
+      tools: {
+        max_output_chars: Number(val("s-maxout")) || 60000,
+        // ★ 1.4.0：两个新开关（读不到就交给 prune 剔除，别覆盖别处设过的值）
+        browser: $("#s-browser") ? chk("s-browser") : undefined,
+        protect_stale_files: $("#p-protect") ? chk("p-protect") : undefined,
+      },
       // ★ 记忆设置在「记忆」页（字段与 MemoryConfig 一一对应）。
       //   注意：设置中心一次只显示一个面板，未显示的字段读成空 → 交给下面的 prune
       //   剔除，绝不覆盖用户在别处设过的值。
@@ -8143,7 +8579,7 @@ function providerEdit(p, models) {
       <div class="help">只存在本地 config.toml，不会外传</div></div>
     <div class="field"><label>模型列表（每行一个）</label>
       <textarea id="pr-models" class="mono" rows="4">${esc((p.models || []).join("\n"))}</textarea>
-      <div class="help">模型名要和服务商文档一致；有些中转站需要带前缀（如 qwen/qwen3-max）</div></div>
+      <div class="help">模型名要和服务商文档一致；有些服务需要带前缀（如 qwen/qwen3-max）</div></div>
     <div class="grid c2">
       <div class="field"><label>上下文窗口</label><input type="number" id="pr-ctx" value="${p.context_window || ""}" placeholder="留空自动识别"></div>
       <div class="field"><label>输出上限</label><input type="number" id="pr-out" value="${p.max_output_tokens || ""}" placeholder="留空自动识别"></div>
@@ -8249,8 +8685,8 @@ async function boot() {
     //   用户在下拉框换模型后，上限要跟着换，否则显示的是上一个模型的窗口。
     applyContextLimit(d);
     if (d.llm && d.llm.compact_ratio) S.compactPct = d.llm.compact_ratio;
-    // 权限三档：从后端读回来同步界面
-    CUR_PERM = (d.permissions || {}).mode || "ask";
+    // 权限四档：从后端读回来同步界面
+    CUR_PERM = (d.permissions || {}).mode || "workspace";
     paintPermChip();
     // 工作区（侧边栏分组用）
     try {
@@ -8311,7 +8747,11 @@ let WS = null, WS_TRIES = 0;
 function connectWS() {
   try {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const url = proto + "//" + location.host + "/ws" + (TOKEN ? "?token=" + encodeURIComponent(TOKEN) : "");
+    // ★ 1.4.0：手机配对令牌也要带上（WebSocket 同样过 _auth_ok）
+    const q = [];
+    if (TOKEN) q.push("token=" + encodeURIComponent(TOKEN));
+    if (PAIR) q.push("pair=" + encodeURIComponent(PAIR));
+    const url = proto + "//" + location.host + "/ws" + (q.length ? "?" + q.join("&") : "");
     WS = new WebSocket(url);
     WS.onopen = () => { WS_TRIES = 0; };
     WS.onmessage = (e) => {
@@ -8409,16 +8849,18 @@ const MODES = [
     desc: "围绕一个长期目标持续推进，跨轮记住进度" },
 ];
 const PERMS = [
-  { id: "deny", label: "只看不改", icon: "eye",
-    desc: "只读取和查看，任何写操作都会被拒绝" },
-  { id: "ask", label: "工作区可改", icon: "folder",
-    desc: "在工作区里可以改文件，动别处会先问你" },
+  { id: "deny", label: "只读", icon: "eye",
+    desc: "可以读取和查看，任何写操作都被拒绝" },
+  { id: "ask", label: "询问", icon: "lock",
+    desc: "每次写操作执行前都问你一次" },
+  { id: "workspace", label: "工作区放行", icon: "folder",
+    desc: "工作区里直接改，越界或危险操作才问你" },
   { id: "allow", label: "完全权限", icon: "unlock",
     desc: "所有操作都放行，不再逐条确认（谨慎使用）" },
 ];
 
 let CUR_MODE = "";          // "" = 都不选（AI 自主判断）/ "plan" / "goal"
-let CUR_PERM = "ask";
+let CUR_PERM = "workspace";
 
 function modeMeta(id) { return MODES.find((m) => m.id === id) || null; }
 function permMeta(id) { return PERMS.find((p) => p.id === id) || PERMS[1]; }
@@ -9183,7 +9625,7 @@ function setupResizers() {
       syncComposerBlockVar();
       try { localStorage.setItem("fg_composer_h", composer.style.getPropertyValue("--composer-h")); } catch (err) {}
     });
-    // 首次进入与窗口尺寸变化时也要对齐一次（视口变化会影响 #composer 实际高度）。
+    // 首次进入与窗口尺寸变化时也要重算一次（视口变化会影响 #composer 实际高度）。
     syncComposerBlockVar();
     window.addEventListener("resize", syncComposerBlockVar);
   }
@@ -9376,7 +9818,7 @@ async function refSession() {
         ).join("\n");
         const inp = $("#input");
         inp.value = (inp.value ? inp.value + "\n\n" : "") +
-          `参考这段历史会话：\n${digest}\n\n基于它继续：`;
+          `基于这段历史会话继续：\n${digest}\n\n`;
         inp.focus();
         closeModal();
         toast("已引用", "ok");

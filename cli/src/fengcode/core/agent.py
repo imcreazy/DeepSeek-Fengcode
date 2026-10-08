@@ -199,6 +199,15 @@ class Agent:
             from ..tools import register_builtin
 
             register_builtin(self.registry)
+        # ★ 1.4.0：「启用内置浏览器」是真开关 —— 关掉后这四个工具不注册进工具表，
+        #   模型在工具列表里根本看不到，也就调不动（此前它们**总是注册**，
+        #   界面上的开关只是个摆设）。
+        try:
+            if not bool(getattr(self.config.tools, "browser", True)):
+                for _n in ("browser_open", "browser_read", "browser_screenshot", "browser_action"):
+                    self.registry.disable(_n)
+        except Exception:
+            pass
         for name in self.config.tools.disabled or []:
             self.registry.disable(name)
 

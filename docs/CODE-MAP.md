@@ -116,8 +116,9 @@
 | 功能 | 符号 |
 |---|---|
 | 页面路由 / 页面注册表 | `go()` / `PAGES` |
-| 通用下拉菜单（权限/模式/模型共用） | `openChoiceMenu()` / `openChoiceMenuAt()` |
-| 权限档位 | `setPerm()` / `PERMS` / `paintPermChip()` |
+| 页面级动作按钮 | `renderTopActions()` + `mountTopActions()` —— ★★ 前者只**构建**，后者在页面渲染**之后**搬到内容顶部（先挂会被各页 `el.innerHTML` 冲掉）。1.4.0 起不再放顶栏（那里与最小化/关闭挤在一起） |
+| 扩展页三区块的落点 | `extHost(kind, host, fallback)` —— 技能/插件/MCP 合并成一页后，弹窗保存时调的无参 `PAGES.skills()` 会退回**隐藏**的旧容器（「保存了但列表没变」），这里统一解析到扩展页那一块 |
+| 权限档位 | `setPerm()` / `PERMS` / `paintPermChip()` —— 四档：只读 / 询问 / 工作区放行 / 完全权限（与设置页 `pms.mode`、后端 `PermissionsConfig.mode` 同名同值）|
 | 待办面板 | `renderTodoPanel()` / `refreshTodos()` / `syncTodoBlockVar()` |
 | 待办面板的占位高度 | `syncTodoBlockVar()` —— 写 `#chat-page` 的 `--todo-block-h`，叠加进 `#messages` 的底部留白（缺它就复现「滚到底仍被面板挡住」），并在高度变化时把贴底的视图收敛回底部 |
 | 右侧信息栏 | `renderInfoPanel()` |
@@ -273,7 +274,8 @@
 | 路径守卫 | `security/paths.py::PathGuard` | 读写白名单、符号链接逃逸、拒止模式 |
 | 审批规则校验 | `security/approval.py::validate_rules()` | 规则写错会静默失效，所以有校验 |
 | 沙箱 | `security/sandbox.py::LocalSandbox` | 子进程执行、超时、编码处理 |
-| 权限档位 | `config/schema.py::PermissionsConfig` | `mode`：allow / ask / deny |
+| 权限档位 | `config/schema.py::PermissionsConfig` | `mode` 四档：`deny` 只读 / `ask` 询问 / `workspace` 工作区放行（默认）/ `allow` 完全权限。★ 旧配置里的 `ask`（当时语义即「工作区可改」）由 `manager.py` 的 `_LEGACY_SEMANTICS` 自动改写成 `workspace`，保持行为不变 |
+| 权限判定 | `security/approval.py::ApprovalGate.evaluate()` | 参数 `read_only` **必须**由工具执行器传入（`tools/base.py`）——只按「有没有 path/command」判写操作会把 `read_file` 也当成写，于是只读档下连看文件都要批准 |
 
 ★★ **踩过的坑**：记忆键原来看命令的**第一个词**。模型爱写 `cd "<工作区>"` 换行再接真操作，
 于是「始终允许」被记成 `cd` = 放行**整类**；同理 `cd X && git restore .` 会被判成「未知操作」**直接放行**，
@@ -387,7 +389,9 @@
 | 命令行 | `cli/main.py` | Typer 命令入口（`serve` / `chat` / `doctor` / `mcp` / `skill`…） |
 | 交互式 REPL | `cli/repl.py` | 纯命令行对话 |
 | 终端 UI | `cli/tui.py` | Textual 全屏界面 |
-| 数据目录 | `paths.py` | `home()` = 数据根（`FENGCODE_HOME` > 仓库 `.fengcode` > `~/.fengcode`） |
+| 数据目录 | `paths.py` | `home()` = 数据根（`FENGCODE_HOME` > 仓库 `.fengcode` > `~/.fengcode`）。★ 1.4.0 起子目录位置可自定义：`overrides()` / `save_overrides()` 读写 `config/paths.json`（**sidecar 而非 config.toml**，否则与配置模块循环依赖），`_sub()` 优先取自定义位置；`MOVABLE` / `FIXED` 两张表决定哪些能挪 |
+| 出网代理 | `net.py` | `apply_to_env()` 把「设置 → 网络」的三档写进**进程环境变量**（httpx 默认 trust_env，一处生效、全部客户端受益）；`proxy_for()` 给需显式传参的客户端；`test_connection()` 发真实请求。★★ `direct` 档**不能**给 httpx 传空串（会抛 `Unknown scheme for proxy URL URL('')`），靠清空环境变量 + `NO_PROXY=*` 实现 |
+| 手机远程访问 | `server/lan.py` | `start()` 复用**同一个** `create_app()` 另起一个监听 `0.0.0.0` 的 uvicorn（`STATE` 是模块级单例 → 手机看到同一批会话）；`qr_svg()` 生成二维码（`qrcode` 缺失时返回空串，前端退回复制链接）。★ 鉴权在 `app.py::_auth_ok()`：按**客户端地址**判断是否远程，远程且已启用就要求配对令牌 `X-Fengcode-Pair` |
 | 工具函数 | `utils/__init__.py` | 时间/大小/token 格式化、`truncate()`、`read_text()`、`iter_files()` |
 | TOML 读写 | `utils/toml.py` | 自己实现的 TOML 输出（**改 config.toml 用 python，别用 PowerShell**，中文会乱码） |
 

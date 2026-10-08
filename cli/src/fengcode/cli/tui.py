@@ -45,7 +45,7 @@ class SidePanel(VerticalScroll):
         lines.append(f"[b]工作区[/b]\n{agent.workspace}")
         lines.append(f"[b]会话[/b]\n{agent.session_id}")
         mode = cfg.permissions.mode
-        mode_txt = {"allow": "全放行", "ask": "危险时询问", "deny": "只读"}.get(mode, mode)
+        mode_txt = {"allow": "全部放行", "workspace": "工作区放行", "ask": "每次询问", "deny": "只读"}.get(mode, mode)
         lines.append(f"[b]审批[/b]\n{mode_txt}")
 
         try:
@@ -408,7 +408,7 @@ class FengTUI(App):
 
     def action_toggle_readonly(self) -> None:
         pm = self.cfg.permissions
-        pm.mode = "ask" if pm.mode == "deny" else "deny"
+        pm.mode = "workspace" if pm.mode == "deny" else "deny"
         self.agent.approval.update_config(pm)
         self._update_status()
         chat = self.query_one("#chat", ChatView)

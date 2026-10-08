@@ -52,8 +52,28 @@ def _remember_read(p: Path) -> None:
         _READ_STAMPS[str(p).lower()] = s
 
 
-def _check_stale(p: Path) -> str | None:
-    """文件在「被读取之后」是否又被改动过？返回错误说明或 None。"""
+def _protect_stale(ctx: Any) -> bool:
+    """「保护被改动的文件」是否开启（默认开）。
+
+    ★ 1.4.0：此前这个保护是**无条件生效**的，界面上却摆着一个开关 ——
+      属于摆设。现在真正接上：取 ``tools.protect_stale_files``，取不到按开启处理。
+    """
+    try:
+        return bool(getattr(getattr(ctx, "config", None), "tools", None).protect_stale_files)
+    except Exception:
+        return True
+
+
+def _check_stale(p: Path, protect: bool = True) -> str | None:
+    """文件在「被读取之后」是否又被改动过？返回错误说明或 None。
+
+    ``protect=False`` 时一律返回 None（不校验版本，允许直接覆盖）。
+    ★ 由 ``tools.protect_stale_files`` 决定（1.4.0 起为**真开关**）。
+      默认开启 —— 并发场景（用户自己在编辑器里改、或另一个进程）下，
+      edit_file 拿着过期旧文本去替换可能改错位置、甚至把别人的改动顶掉。
+    """
+    if not protect:
+        return None
     key = str(p).lower()
     was = _READ_STAMPS.get(key)
     if was is None:
@@ -328,7 +348,8 @@ class EditFileTool(Tool):
         if looks_binary(p):
             return ToolResult.fail(f"{display_path(p)} 是二进制文件，无法文本编辑")
         # ★ 2-F：写前核对「读取时观察到的版本」，避免拿过期文本改错位置
-        stale = _check_stale(p)
+        #   ★ 1.4.0：该保护由「设置 → 沙箱和权限」的开关控制，关掉即不校验。
+        stale = _check_stale(p, _protect_stale(ctx))
         if stale:
             return ToolResult.fail(stale)
         try:
@@ -402,7 +423,7 @@ class MultiEditTool(Tool):
             return ToolResult.fail("edits 不能为空")
         p = ctx.guard.check_write(path, new_file=False)
         # ★ 2-F：同 edit_file —— 写前核对读取时的版本
-        stale = _check_stale(p)
+        stale = _check_stale(p, _protect_stale(ctx))
         if stale:
             return ToolResult.fail(stale)
         text, enc = await asyncio.to_thread(read_text_smart, p)

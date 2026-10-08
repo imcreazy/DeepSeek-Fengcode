@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 SKIP_DIRS = {
     "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
     ".venv", "venv", "build", "dist", "node_modules", ".fengcode", "_shots", ".agents",
-    # ★ 与 push_github.py / release.py 对齐：本地截图与交付目录都不推送。
+    # ★ 与 push_github.py / release.py 保持一致：本地截图与交付目录都不推送。
     #   漏了它们只会让「将上传 N 个文件」的概览偏大（安全检查本身不受影响），
     #   但三处规则必须一致，否则迟早会漏掉真的该挡的目录。
     "_ui_shots", "shots", "交付", "发布版", "win-unpacked", "fengcode-data", "release",
@@ -27,12 +27,12 @@ SKIP_DIR_SUFFIXES = (".egg-info",)
 SKIP_EXT = {".pyc", ".pyo", ".db", ".db-wal", ".db-shm", ".log", ".zip"}
 # ★★ 密钥与凭证类文件（与 push_github.py / release.py 的规则保持一致）
 SKIP_NAME_PREFIXES = (".env",)
-# ★★ 与 push_github.py 的 SKIP_NAMES 逐项一致（2026-10-06 对齐）。
+# ★★ 与 push_github.py 的 SKIP_NAMES 逐项一致（2026-10-06 核定）。
 #   曾漏掉 7 项（id_dsa / id_ecdsa / .netrc / .pgpass / .npmrc / .pypirc / known_hosts）——
 #   方向是「搬运工挡得更全」，所以那些文件不会被推出去、不构成泄露；
 #   但检查员会把它们当成「待检查文件」去扫内容，而它的正则未必认得出 .netrc 那种
 #   `machine x login y password z` 格式 → 那句「检查通过」的含金量比看上去低。
-#   规则必须逐项对齐，别只对齐扫描根。
+#   规则必须逐项一致，别只管住扫描根。
 SKIP_NAMES = {
     "config.toml", "credentials", "secrets.toml", "auth.json",
     "account.json", "tokens.json", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",

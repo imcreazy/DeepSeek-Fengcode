@@ -209,7 +209,7 @@ button:active:not(:disabled) { transform: scale(.985); }
 button:disabled { cursor: not-allowed; opacity: .45; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
 
-/* 图标基线对齐 */
+/* 图标基线一致 */
 .ic { display: inline-block; vertical-align: -0.16em; flex: none; }
 
 /* 尊重用户的"减少动画"偏好 */
@@ -350,6 +350,9 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .page { position: absolute; inset: 0; overflow-y: auto; padding: 20px 24px 40px; display: none; }
 .page.active { display: block; }
 .page.nopad { padding: 0; }
+/* ★ 页面级动作按钮（1.4.0）：从顶栏搬进页面内容顶部 —— 顶栏那行与最小化/关闭
+   挤在一起既难注意又割裂。贴在首个 .card 之前，与卡片同宽、靠左。 */
+.page-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
 
 /* ==========================================================================
    侧边栏（改造后）：新建会话 + 工作区会话列表 + 底部工具
@@ -528,9 +531,9 @@ body.resizing-x, body.resizing-x * { cursor: ew-resize !important; }
 .ip-sub { font-size: calc(11px * var(--ui-scale)); color: var(--text-dim); }
 
 /* ★ 两列对照（左：本会话累计，右：本回合）。
-   用三列网格：标签列自适应，两列数值等宽右对齐 —— 卡片右侧原本留空较多，
+   用三列网格：标签列自适应，两列数值等宽、靠右 —— 卡片右侧原本留空较多，
    正好拿来放第二列数值，不必再往下堆一倍行数。
-   tabular-nums 保证两列数字对齐，否则逐行扫读时会歪。 */
+   tabular-nums 保证两列数字成列，否则逐行扫读时会歪。 */
 .ip-cols {
   display: grid; grid-template-columns: auto 1fr 1fr;
   gap: 4px 8px; align-items: baseline;
@@ -719,7 +722,7 @@ body.resizing-x, body.resizing-x * { cursor: ew-resize !important; }
 }
 .mrow.off .mname { color: var(--text-faint); }
 
-/* 字段区：两行（容量 / 单价）共用一套网格列，输入框才能上下对齐成列 */
+/* 字段区：两行（容量 / 单价）共用一套网格列，输入框才能上下成列 */
 .mcfg {
   grid-column: 2; grid-row: 2;
   display: grid; gap: 3px;
@@ -870,6 +873,19 @@ details.prov-more > summary:hover { color: var(--text); }
   font-size: calc(11.5px * var(--ui-scale)); line-height: 1.65;
 }
 .perm-warn[hidden] { display: none; }
+/* ★ 执行环境如实说明（1.4.0）：本机没有系统级沙箱这件事要写出来，
+   而不是让用户以为「有沙箱」——所以做成一条常驻的说明条，不是警告（不报错时也该看到）。 */
+.approval-note {
+  margin-bottom: 12px; padding: 9px 11px; border-radius: 11px;
+  background: var(--bg-sunken); border: 1px solid var(--border);
+  font-size: calc(11.5px * var(--ui-scale)); line-height: 1.7; color: var(--text-soft);
+}
+/* 手机访问的二维码：固定白底，扫码才认得出来（深色主题下不能跟着变黑） */
+.lan-qr {
+  flex: none; width: 172px; height: 172px; padding: 8px;
+  background: #fff; border: 1px solid var(--border); border-radius: 11px;
+}
+.lan-qr svg { width: 100%; height: 100%; display: block; }
 .perm-warn .pw-head {
   color: var(--warn); font-weight: 620; display: flex; align-items: center; gap: 6px;
   margin-bottom: 5px;
@@ -978,6 +994,8 @@ details.prov-more > summary:hover { color: var(--text); }
 .field { margin-bottom: 11px; }
 .field label { display: block; font-size: calc(11.5px * var(--ui-scale)); color: var(--text-dim); margin-bottom: 4px; font-weight: 500; }
 .field .help { font-size: calc(11px * var(--ui-scale)); color: var(--text-faint); margin-top: 3px; }
+/* ★ 输入框后面的单位（如「%」）。用行内元素紧跟输入框，不再让它被挤到第二行。 */
+.field > .unit { font-size: calc(12px * var(--ui-scale)); color: var(--text-dim); }
 /* ★ 输入框 + 右侧动作按钮（账号页的「粘贴」/「显示」）。
    用 flex 让输入框占满剩余宽度、按钮不被压缩；按钮高度与输入框一致才不会参差。 */
 .inp-act { display: flex; align-items: center; gap: 7px; }
@@ -1193,7 +1211,7 @@ td.mono, th.mono { font-family: "SF Mono", Consolas, monospace; font-size: calc(
   border: none; border-left: 2px solid var(--border-strong);
   border-radius: 0 10px 10px 0;
   background: transparent;
-  /* ★ 右侧 margin 用 auto → 思考块**靠左对齐**，不再被推到右边（实测反馈的「错位」）。
+  /* ★ 右侧 margin 用 auto → 思考块**靠左**，不再被推到右边（实测反馈的「错位」）。
      宽度用 min(720px, 100%)：窄窗口下跟着变窄，不会溢出、也不会被裁。 */
   margin: 2px auto 8px 0;
   max-width: min(720px, 100%);
@@ -1388,7 +1406,7 @@ td.mono, th.mono { font-family: "SF Mono", Consolas, monospace; font-size: calc(
    而不是被中间的空隙留在原地不动。 */
 .composer-status {
   display: flex; align-items: center; gap: 8px;
-  /* 已在 #input-box 内部：上内边距对齐卡片圆角，左右与输入文字对齐 */
+  /* 已在 #input-box 内部：上内边距与卡片圆角一致，左右与输入文字齐平 */
   padding: 9px 14px 0; min-height: 20px;
   font-size: calc(12px * var(--ui-scale)); color: var(--text-soft);
   pointer-events: none; white-space: nowrap; overflow: hidden;
@@ -1720,8 +1738,8 @@ body.resizing #infopanel { transition: none; }
 .ask {
   background: var(--bg-elev); border: 1px solid var(--accent); border-radius: 15px;
   padding: 13px 15px; box-shadow: var(--shadow-lg);
-  /* ★★ 宽度必须与对话区**对齐**：外层 .msg-wrap 已限宽（max-width 880px + 左右 24px 内边距），
-     卡片自己再写一个固定 max-width 就会比消息窄一截，看起来像缩在角落里（实测反馈「长度不跟对话对齐」）。
+  /* ★★ 宽度必须与对话区**一致**：外层 .msg-wrap 已限宽（max-width 880px + 左右 24px 内边距），
+     卡片自己再写一个固定 max-width 就会比消息窄一截，看起来像缩在角落里（实测反馈「长度不跟对话一致」）。
      这里只保留 100% 跟随外层，不再自带宽度。 */
   width: 100%; max-width: 100%; box-sizing: border-box;
 }

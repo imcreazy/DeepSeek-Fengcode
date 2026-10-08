@@ -7,7 +7,7 @@ Markdown 技能
     <skills_dir>/<skill-name>/
         SKILL.md          # 必需：带 YAML frontmatter
         scripts/xxx.py    # 可选：脚本
-        reference.md      # 可选：附加参考
+        reference.md      # 可选：附加资料
 
 ``SKILL.md`` 格式::
 

@@ -310,6 +310,10 @@ class ToolRegistry:
                 path=path,
                 dangerous=tool.dangerous or tool.requires_approval,
                 session_id=ctx.session_id,
+                # ★ 1.4.0：把「这个工具是否只读」告诉审批门。
+                #   只按「有没有 path / command」判断写操作会把 read_file 这类
+                #   只读工具也算进去，于是「只读」档下连看文件都要批准。
+                read_only=bool(tool.read_only),
             )
             if not allowed:
                 if req is None:

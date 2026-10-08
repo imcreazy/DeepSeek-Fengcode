@@ -49,8 +49,75 @@ def home() -> Path:
     return Path.home() / ".fengcode"
 
 
+# ---- ★ 1.4.0：目录位置可自定义（存储页的「移动」）-------------------------
+# ★ 为什么用 sidecar 文件（config/paths.json）而不是 config.toml：
+#   paths 是配置模块的**底层依赖**（配置要先知道往哪写），从 config 里读会形成
+#   循环依赖。sidecar 只有几条 `名字 → 绝对路径`，谁都能读、坏了也不影响启动。
+_OVERRIDE_FILE = "paths.json"
+# 可移动的目录：键名 → (显示名, 说明)。★ 不在表里的目录一律不可移动。
+# ★★ 为什么**不含 data**（数据库）：会话/记忆/任务都在 `data/fengcode.db` 里，
+#    服务进程持有它的句柄；Windows 上文件被占用就搬不动，强搬可能把库弄坏。
+#    这里只开放「不含活跃数据库句柄」的目录 —— 移动它们真的安全。
+MOVABLE = {
+    "cache": ("索引与缓存", "检索索引与派生数据；删掉会自动重建"),
+    "uploads": ("上传与附件", "聊天里传过的文件与图片"),
+    "workspace": ("会话工作区", "默认工作目录，agent 在这里读写文件"),
+    "logs": ("运行日志", "外壳与服务端的日志文件"),
+}
+# 只读展示的目录（有说明为什么不可移动）
+FIXED = {
+    "config": ("配置与凭据", "设置与登录凭证；程序靠它找数据，不能挪"),
+    "data": ("会话与归档", "会话、记忆与任务都在这一个数据库里；服务运行中挪不动，需停服后手动搬"),
+    "backups": ("备份", "改动文件时自动留的副本"),
+}
+_OV_CACHE: dict[str, str] | None = None
+
+
+def _override_file() -> Path:
+    # ★ 永远基于 home() 解析：这个文件自己绝不能飘，否则下次启动就找不回自定义位置
+    return home() / "config" / _OVERRIDE_FILE
+
+
+def overrides() -> dict[str, str]:
+    """读自定义目录位置（带进程内缓存）。"""
+    global _OV_CACHE
+    if _OV_CACHE is not None:
+        return _OV_CACHE
+    data: dict[str, str] = {}
+    try:
+        import json
+
+        raw = json.loads(_override_file().read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            for k, v in raw.items():
+                if isinstance(v, str) and v.strip():
+                    data[str(k)] = v
+    except Exception:
+        data = {}
+    _OV_CACHE = data
+    return data
+
+
+def save_overrides(data: dict[str, str]) -> None:
+    """写回自定义目录位置并清缓存。"""
+    global _OV_CACHE
+    import json
+
+    f = _override_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    clean = {str(k): str(v) for k, v in (data or {}).items() if str(v).strip()}
+    f.write_text(json.dumps(clean, ensure_ascii=False, indent=2), encoding="utf-8")
+    _OV_CACHE = None
+
+
+def default_sub(name: str) -> Path:
+    """某个子目录的**默认**位置（未自定义时）。"""
+    return home() / name
+
+
 def _sub(name: str) -> Path:
-    p = home() / name
+    custom = overrides().get(name)
+    p = Path(custom).expanduser() if custom else default_sub(name)
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -203,4 +270,9 @@ __all__ = [
     "ensure_all",
     "long_path",
     "display_path",
+    # ★ 1.4.0：可自定义目录位置
+    "MOVABLE",
+    "overrides",
+    "save_overrides",
+    "default_sub",
 ]

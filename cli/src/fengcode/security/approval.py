@@ -120,13 +120,23 @@ class ApprovalGate:
         dangerous: bool = False,
         session_id: str | None = None,
         extra: str = "",
+        read_only: bool = False,
     ) -> tuple[bool, str, ApprovalRequest | None]:
-        """返回 ``(是否可直接执行, 原因, 需批准的请求)``。"""
+        """返回 ``(是否可直接执行, 原因, 需批准的请求)``。
+
+        ``read_only``：调用方（工具执行器）声明这个工具**不产生副作用**。
+        ★★ 为什么必须有这个参数：``read_file`` 这类只读工具**也带 ``path``**，
+          若只按「有没有 path / command」判断是不是写操作，就会把「读一个文件」
+          也拦下来要求批准 —— 实测「只读」档下连看文件都要点允许，档位名和实际
+          行为直接矛盾（单测 ``test_approval_gate_allows_normal`` 也当场抓到）。
+        """
         cfg = self.config
         target = command or path or extra
+        # 只读工具不存在「写操作」，deny / ask 两档都不该拦它。
+        writes = (not read_only) and bool(dangerous or command or path)
 
-        # 0) deny 模式：一律拒绝写操作
-        if cfg.mode == "deny" and (dangerous or command or path):
+        # 0) deny 模式（只读档）：只拒绝写操作，读照常放行
+        if cfg.mode == "deny" and writes:
             return False, "当前为只读模式，已拒绝该操作", None
 
         # 1) 显式规则优先
@@ -173,6 +183,30 @@ class ApprovalGate:
                 return True, "此前已选择始终允许", None
             if memory_key in self._session_allows:
                 return True, "本会话已允许同类操作", None
+
+        # ★★★ 1.4.0：ask 档 —— **任何写操作都先问一次**。
+        #   放在「记忆」检查之后是有意的：用户亲手点过「本会话允许 / 始终允许」的
+        #   具体操作不再重复问 —— 那次点击本身就是他给出的授权，再问一遍只会烦人。
+        #   纯读取命令已在上面直接放行，查看状态不至于也要点一次「允许」。
+        if cfg.mode == "ask" and writes:
+            _risk = "high" if (force_ask or any(r in _HIGH_RISK_REASONS for r in reasons)) else "medium"
+            if reasons:
+                _why = "、".join(dict.fromkeys(reasons))
+                _text = f"检测到风险：{_why}"
+            elif force_ask:
+                _text = "需要确认：会改动仓库状态（可能丢弃未提交的改动）"
+            else:
+                _text = "需要确认：当前为「询问」档，写操作都会先问一次"
+            req = ApprovalRequest(
+                id=new_id("ap"),
+                action=action,
+                target=target,
+                reason=_text,
+                risk=_risk,
+                session_id=session_id,
+                preview=target[:1000],
+            )
+            return False, req.reason, req
 
         # allow 模式：除高危外放行（但「改仓库状态」仍要问）
         if cfg.mode == "allow" and not force_ask:
@@ -422,7 +456,7 @@ def _match_rule(pattern: str, action: str, target: str) -> bool:
     各前缀的语义：
     - ``tool:`` / ``action:`` —— 按工具名匹配（支持通配）。
     - ``cmd:`` / ``command:`` —— 匹配命令。**没写通配符时按前缀匹配**，
-      所以 ``cmd:git push`` 能命中 ``git push origin main``（对齐常见 agent 的直觉）。
+      所以 ``cmd:git push`` 能命中 ``git push origin main``（符合常见 agent 的直觉）。
     - ``path:`` / ``file:`` —— 匹配路径。没写通配符时按**子串**匹配。
     - ``risk:`` —— 在目标文本里找关键词。
     - 无前缀：含通配符则整体 fnmatch，否则按子串/等值匹配。

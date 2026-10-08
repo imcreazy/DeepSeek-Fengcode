@@ -800,7 +800,7 @@ class MemoryManager:
         body_chars = max(200, int(getattr(self.config, "recall_body_chars", 1200) or 1200))
         budget = int(max_tokens if max_tokens is not None
                      else (getattr(self.config, "recall_budget_tokens", 3200) or 3200))
-        lines = ["<memory>", "以下是与当前话题相关的历史记忆（供参考，可能过时，必要时先核实）："]
+        lines = ["<memory>", "以下是与当前话题相关的历史记忆（仅作提示，可能过时，必要时先核实）："]
         for it in items:
             block = f"· [{_kind_label(it.kind)}] {it.title or _auto_title(it.content)}"
             if it.description:

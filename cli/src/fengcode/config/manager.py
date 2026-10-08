@@ -110,8 +110,8 @@ def default_config() -> Config:
         cfg.tools.shell.default_shell = ""
         cfg.sandbox.bash = "auto"
 
-    # 默认权限：工作区可改（三档中的中间档，见权限等级说明）
-    cfg.permissions.mode = "ask"
+    # 默认权限：工作区放行（四档中的第三档，见权限等级说明）
+    cfg.permissions.mode = "workspace"
     cfg.permissions.write_paths = ["$WORKSPACE", "$TMP"]
     cfg.permissions.read_paths = ["$WORKSPACE", "$HOME", "$TMP"]
     return cfg
@@ -180,6 +180,8 @@ class ConfigManager:
             #   ★★ 必须在 `_coerce` **之前**清理 data —— 否则 cfg 已按旧值构造完毕，
             #   再删 data 里的字段就晚了（首次实现正是踩了这个顺序坑，验证时才发现）。
             migrated = self._migrate_legacy_defaults(data)
+            # ★ 语义迁移（值改写）必须紧跟其后、同样在 `_coerce` 之前 —— 理由同上。
+            migrated = self._migrate_legacy_semantics(data) or migrated
             cfg = self._coerce(data)
             self._config = cfg
             if migrated:
@@ -205,6 +207,30 @@ class ConfigManager:
         ("sandbox", "max_file_write_mb"): (64, "该字段没有任何代码读，已删除"),
         ("sandbox", "cpu_limit"): (0.0, "该字段没有任何代码读，已删除"),
     }
+
+    # ★★ 语义变了、但**字段名没变**的迁移：值本身要改写。
+    #   为什么单开一张表：_LEGACY_DEFAULTS 是「值等于旧默认值就删掉」，
+    #   而这里要把旧值**换成**新值（删了会退回新默认值，不一定等价）。
+    _LEGACY_SEMANTICS: dict[tuple[str, str], tuple[Any, Any, str]] = {
+        # (段, 字段) -> (旧值, 新值, 原因)
+        # 1.4.0 权限拆成四档：旧 ask 的实际行为就是「工作区可改」（非危险操作直接放行），
+        #   而新的 ask 变成「每次写操作都问」。旧配置里存过 ask 的人必须改写成
+        #   workspace，否则升级后会发现「以前不问的现在每条都问」。
+        ("permissions", "mode"): ("ask", "workspace", "权限档位拆为四档，旧 ask 语义对应新的工作区放行"),
+    }
+
+    def _migrate_legacy_semantics(self, data: dict) -> bool:
+        """把语义已变化的旧值改写成新值，返回是否发生了改动。"""
+        changed = False
+        for (section, field), (old, new, _why) in self._LEGACY_SEMANTICS.items():
+            sec = data.get(section)
+            if not isinstance(sec, dict) or field not in sec:
+                continue
+            if sec[field] != old:
+                continue
+            sec[field] = new
+            changed = True
+        return changed
 
     def _migrate_legacy_defaults(self, data: dict) -> bool:
         """把配置里残留的「旧默认值」清掉，返回是否发生了改动。

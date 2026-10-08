@@ -239,8 +239,8 @@ def run_cmd(
     json_out: bool = typer.Option(False, "--json", help="以 JSON 输出结果"),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="不打印过程，只输出结果"),
     approve: str = typer.Option(
-        "ask", "--approve",
-        help="审批策略：ask（询问）/ auto（自动允许）/ deny（一律拒绝）",
+        "", "--approve",
+        help="审批策略：ask（每次写操作都问）/ workspace（工作区放行）/ auto（全部放行）/ deny（只读）；不填则跟随配置",
     ),
     max_steps: int = typer.Option(0, "--max-steps", help="最大步数"),
 ) -> None:
@@ -253,10 +253,11 @@ def run_cmd(
         die("请提供任务描述，例如：fengcode run \"统计当前目录的文件数\"")
 
     rt = build_runtime(with_mcp=True)
-    if approve == "auto":
-        rt["config"].permissions.mode = "allow"
-    elif approve == "deny":
-        rt["config"].permissions.mode = "deny"
+    # ★ 1.4.0 四档：auto 是「全部放行」的历史别名，映射到 allow；
+    #   ask / workspace 直接对应新档位。**不填则跟随配置文件**（保持原行为）。
+    _pm = {"auto": "allow", "ask": "ask", "workspace": "workspace", "deny": "deny"}.get(approve)
+    if _pm:
+        rt["config"].permissions.mode = _pm
     ag = make_agent(rt, session_id=session or None, workspace=workspace or None)
 
     if not quiet and not json_out:

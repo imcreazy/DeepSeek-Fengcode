@@ -1,6 +1,6 @@
 """配置数据模型（pydantic）。
 
-字段风格对齐常见的 ``config.toml`` 写法，便于手动粘贴已有配置，
+字段风格沿用常见的 ``config.toml`` 写法，便于手动粘贴已有配置，
 同时保持向后兼容：未知字段一律保留，不做严格校验失败。
 """
 
@@ -239,6 +239,14 @@ class ToolsConfig(_Base):
     mcp_call_timeout_seconds: float = 300.0
     mcp_startup_timeout_seconds: float = 30.0
     max_output_chars: int = 60_000
+    # ★★★ 1.4.0 新增两个**真开关**（此前对应的行为是**无条件生效**的，
+    #   界面上却像有开关，属于「摆设」——用户明确要求不能有摆设）。
+    #   内置浏览器：关掉后 browser_open / browser_read / browser_screenshot /
+    #   browser_action 四个工具**不注册进工具表**，模型看不到也就调不动。
+    browser: bool = True
+    #   保护被改动的文件：模型读过或写过的文件，若之后被别人改动过，
+    #   整文件覆盖式写入会被拒绝并要求重新读取（防止把别人的改动顶掉）。
+    protect_stale_files: bool = True
 
     class Shell(_Base):
         default_shell: str = ""  # 空 = 自动（Windows: pwsh/powershell；POSIX: bash）
@@ -262,9 +270,23 @@ class ApprovalRule(_Base):
 
 
 class PermissionsConfig(_Base):
-    """审批门策略。mode: allow=全放行 / ask=危险操作需批准 / deny=只读。"""
+    """审批门策略。
 
-    mode: Literal["allow", "ask", "deny"] = "ask"
+    ★★★ 1.4.0 起为**四档**（原来三档）：
+      · ``deny``      只读 —— 放行纯读取命令，拒绝一切写操作
+      · ``ask``       询问 —— 任何写操作都先问一次（最保守的交互档）
+      · ``workspace`` 工作区放行 —— 非危险操作直接放行，危险操作才问；
+                      写文件仍受 ``write_paths`` 约束（越界由 PathGuard 挡）
+      · ``allow``     完全权限 —— 除高危与「改仓库状态」外全部放行
+
+    ★ 为什么要把原来的 ``ask`` 拆成两档：旧 ``ask`` 实际语义是「工作区可改」，
+      但字面上是「询问」，两件事混在一个档里 —— 想要「每步都问我」的人拿不到，
+      想要「工作区里别烦我」的人又怕它问。拆开后两者各有一档。
+    ★ 迁移：旧配置里存的 ``ask``（当时即「工作区可改」）会被自动改写成
+      ``workspace``，语义不变（见 ``manager.py`` 的 ``_LEGACY_SEMANTICS``）。
+    """
+
+    mode: Literal["allow", "ask", "workspace", "deny"] = "workspace"
     write_paths: list[str] = Field(default_factory=list)
     read_paths: list[str] = Field(default_factory=list)
     deny_patterns: list[str] = Field(default_factory=list)
@@ -397,6 +419,32 @@ class WebSearchConfig(_Base):
     render_js: bool = True
 
 
+class NetworkConfig(_Base):
+    """出网方式（模型请求、MCP、网页抓取都经此处）。
+
+    ★★★ 1.4.0 新增：以前**完全没有代理设置** —— httpx 默认读进程环境变量
+      （``HTTP_PROXY`` 等），而桌面端是自拉起的子进程，用户改不了它的环境。
+      结果是「公司里必须走代理才能用」这件事在界面上无处设置、也无法排查。
+      现在三档可选，并**真的作用到每一个 httpx 客户端**（见 ``fengcode/net.py``）。
+
+    · ``system`` 跟随系统：不干预，让 httpx 读环境变量（保持原有行为）
+    · ``manual`` 手动：所有出网走指定代理
+    · ``direct`` 直连：忽略环境变量里的代理，强制直连
+    """
+
+    mode: Literal["system", "manual", "direct"] = "system"
+    # 手动档的代理。密码位支持 ``${VAR}`` 引用环境变量（避免明文写进配置）。
+    proxy_type: Literal["http", "https", "socks5", "socks5h"] = "http"
+    proxy_host: str = ""
+    proxy_port: int = 0
+    proxy_user: str = ""
+    proxy_pass: str = ""
+    # 这些地址不走代理（逗号或换行分隔）
+    no_proxy: str = "localhost, 127.0.0.1, ::1"
+    # 「测试连接」的目标；留空则用一个通用的连通性探测地址
+    test_url: str = ""
+
+
 class AutomationConfig(_Base):
     windows_automation: bool = True
     screenshot_dir: str = ""
@@ -448,6 +496,7 @@ class Config(_Base):
     ui: UIConfig = Field(default_factory=UIConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
+    network: NetworkConfig = Field(default_factory=NetworkConfig)
     automation: AutomationConfig = Field(default_factory=AutomationConfig)
     account: AccountConfig = Field(default_factory=AccountConfig)
 

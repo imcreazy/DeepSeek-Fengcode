@@ -28,7 +28,7 @@ def normalize_roles(messages: list["Message"]) -> list["Message"]:
 
     - 开头的多条 ``system`` 合并为一条，保持前缀逐字节稳定 → 缓存友好；
     - 中间/尾部的 ``system`` 改写成 ``user``，并用 ``<system-reminder>`` 包裹，
-      语义不变、模型可识别（Claude Code 同款写法），但不会触发 400。
+      语义不变、模型可识别（各家通用的包裹写法），但不会触发 400。
     """
     out: list[Message] = []
     seen_non_system = False

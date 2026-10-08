@@ -142,7 +142,7 @@ MiniMax / 百川 / 阶跃星辰）→ 填入 API Key → 「测试并获取模�
 
 - **50+ 内置工具**：文件读写编辑与搜索、Shell、代码执行、网页抓取、HTTP、
   Git、SQLite、PDF / Office / 图片解析、压缩包、定时任务、进程管理、SSH 远程
-- **技能**：Markdown `SKILL.md`（兼容 Claude Skills 规范）与 Python 类技能，内置 9 个中文技能
+- **技能**：Markdown `SKILL.md`（通用的技能描述格式）与 Python 类技能，内置 9 个中文技能
 - **插件**：`manifest.yaml` 声明 + 本地目录加载 + 热启用
 - **MCP**：双向支持 —— 连接外部 MCP 服务器，或自身作为 MCP 服务器对外提供能力
 - **子智能体**：独立上下文与预算，支持并行扇出、顺序链与辩论
@@ -154,7 +154,7 @@ MiniMax / 百川 / 阶跃星辰）→ 填入 API Key → 「测试并获取模�
 
 ---
 
-## 命令行参考
+## 命令行用法
 
 ```bash
 fengcode                       # 进入对话

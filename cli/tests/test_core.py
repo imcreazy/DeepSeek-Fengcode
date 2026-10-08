@@ -245,12 +245,31 @@ class TestSecurity:
         assert _norm_for_match(p).startswith(_norm_for_match(Path(_TMP)))
 
     def test_approval_gate_allows_normal(self):
+        """只读操作在任何档位下都放行（read_only 由工具执行器显式声明）。"""
         from fengcode.config.schema import PermissionsConfig
         from fengcode.security.approval import ApprovalGate
 
-        gate = ApprovalGate(PermissionsConfig(mode="ask"))
-        ok, _, req = gate.evaluate("read_file", path="a.txt")
-        assert ok and req is None
+        for mode in ("deny", "ask", "workspace", "allow"):
+            gate = ApprovalGate(PermissionsConfig(mode=mode))
+            ok, _, req = gate.evaluate("read_file", path="a.txt", read_only=True)
+            assert ok and req is None, f"{mode} 档下只读操作被拦了"
+
+    def test_approval_gate_four_modes(self):
+        """四档语义差异（1.4.0）：deny 直接拒 / ask 每次问 / workspace 与 allow 放行。"""
+        from fengcode.config.schema import PermissionsConfig
+        from fengcode.security.approval import ApprovalGate
+
+        def run(mode, **kw):
+            return ApprovalGate(PermissionsConfig(mode=mode)).evaluate("write_file", **kw)
+
+        ok, _, req = run("deny", path="x.txt")
+        assert not ok and req is None, "只读档应直接拒绝，不该弹审批"
+        ok, _, req = run("ask", path="x.txt")
+        assert not ok and req is not None, "询问档应在执行前弹审批"
+        ok, _, req = run("workspace", path="x.txt")
+        assert ok and req is None, "工作区放行档不该拦普通写"
+        ok, _, req = run("allow", path="x.txt")
+        assert ok and req is None, "完全权限档不该拦普通写"
 
     def test_approval_gate_blocks_dangerous(self):
         from fengcode.config.schema import PermissionsConfig
@@ -654,7 +673,7 @@ class TestTools:
         asyncio.run(go())
 
     def test_crlf_file_editable_with_lf_text(self):
-        """CRLF 文件用 LF 文本也应能精确匹配（并对齐换行符）。"""
+        """CRLF 文件用 LF 文本也应能精确匹配（并统一换行符）。"""
         import asyncio
 
         from fengcode.security.paths import PathGuard

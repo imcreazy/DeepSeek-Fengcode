@@ -306,7 +306,7 @@ class SimpleRepl:
 
         if cmd == "/readonly":
             pm = self.cfg.permissions
-            pm.mode = "ask" if pm.mode == "deny" else "deny"
+            pm.mode = "workspace" if pm.mode == "deny" else "deny"
             self.agent.approval.update_config(pm)
             print(c(f"  审批模式：{pm.mode}", C.GREEN))
             return True

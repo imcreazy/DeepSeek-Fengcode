@@ -1,6 +1,6 @@
 """MCP 服务器：把 Fengcode 自身的能力暴露给外部 MCP 客户端。
 
-用途：让 Claude Desktop、Cursor、其它 Agent 直接调用 Fengcode 的工具与记忆。
+用途：让外部 MCP 客户端（桌面端 AI 应用、编辑器插件等）直接调用 Fengcode 的工具与记忆。
 
 传输：
 - ``stdio``：被外部客户端作为子进程启动（最常用）

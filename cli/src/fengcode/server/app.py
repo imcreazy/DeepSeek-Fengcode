@@ -175,6 +175,27 @@ def _auth_ok(request: Any) -> bool:
     """校验访问令牌（若配置了）。"""
     mgr = get_manager()
     token = (mgr.config.server.token or "").strip()
+    # ★ 1.4.0：来自**局域网**的请求（手机远程访问）必须带配对令牌。
+    #   为什么单独判：主服务默认监听 127.0.0.1 时「不设 token = 本机随便用」是合理的，
+    #   但一旦开了手机访问（监听 0.0.0.0），同一局域网里任何设备都能连 ——
+    #   那时「没设 token 就放行」等于把整个 agent 敞开。
+    #   判据用**客户端地址**（回环 = 本机），不依赖可伪造的请求头。
+    try:
+        client = getattr(request, "client", None)
+        host = (getattr(client, "host", "") or "") if client else ""
+    except Exception:
+        host = ""
+    remote = bool(host) and host not in ("127.0.0.1", "::1", "localhost")
+    if remote:
+        try:
+            from .lan import LAN, token_ok
+
+            if LAN.get("enabled"):
+                got_lan = request.headers.get("x-fengcode-pair") or request.query_params.get("pair") or ""
+                if not token_ok(str(got_lan)):
+                    return False
+        except Exception:
+            pass
     if not token:
         return True
     got = (
@@ -591,6 +612,15 @@ class AppState:
     # ---- 后台服务 ------------------------------------------------------
     async def startup(self) -> None:
         cfg = self.manager.config
+        # ★ 1.4.0：把「设置 → 网络」的出网方式应用到进程环境变量。
+        #   必须在**建任何 httpx 客户端之前**做，否则先建好的客户端还按旧设置走。
+        try:
+            from .. import net as _net
+
+            _msg = _net.apply_to_env(self.manager)
+            self.bus.emit(Ev.LOG, {"level": "info", "message": f"出网方式：{_msg}"})
+        except Exception as e:
+            self.bus.emit(Ev.LOG, {"level": "warn", "message": f"应用出网设置失败：{e}"})
         # 插件
         try:
             from ..storage.db import get_db
@@ -631,7 +661,7 @@ class AppState:
             except Exception as e:
                 self.bus.emit(Ev.LOG, {"level": "error", "message": f"调度器启动失败：{e}"})
         # ★ 1-O：会话索引自愈（后台执行）——元数据坏了就从 messages 权威数据重建。
-        #   放后台是为了不拖慢冷启动（对齐 2-H 的方向：历史整理不该阻塞启动）。
+        #   放后台是为了不拖慢冷启动（与 2-H 的方向一致：历史整理不该阻塞启动）。
         try:
             asyncio.create_task(self._repair_session_index())
         except Exception:
@@ -901,6 +931,17 @@ async def api_config(request: Any) -> Response:
 def _reload_runtime() -> None:
     """配置变更后刷新运行期对象。"""
     mgr = STATE.manager
+    # ★ 1.4.0：出网方式（代理）改了要立刻生效 —— 写进环境变量并让已建的
+    #   httpx 客户端失效重建，否则用户点了「保存」却还是旧路由。
+    try:
+        from .. import net as _net
+
+        _net.apply_to_env(mgr)
+        from ..llm.router import get_llm as _get_llm
+
+        _get_llm(mgr).invalidate()
+    except Exception:
+        pass
     for ag in list(STATE.agents.values()):
         ag.config = mgr.config
         ag.guard = ag.guard.__class__(
@@ -1750,7 +1791,7 @@ def _restore_config(name: str) -> tuple[bool, str]:
 async def api_instruction_files(request: Any) -> Response:
     """列出工作区里的「指令文件」（每轮对话自动注入的规矩文件）。
 
-    对齐常见 agent 约定：AGENTS.md / .fengcode/AGENTS.md / CLAUDE.md / .cursorrules。
+    遵循常见的 agent 约定：AGENTS.md / .fengcode/AGENTS.md / CLAUDE.md / .cursorrules。
     """
     if not _auth_ok(request):
         return _err("未授权", 401)
@@ -1766,8 +1807,8 @@ async def api_instruction_files(request: Any) -> Response:
     candidates = [
         ("AGENTS.md", "项目约定与规则（推荐）"),
         (".fengcode/AGENTS.md", "Fengcode 专用约定"),
-        ("CLAUDE.md", "兼容 Claude Code 的约定文件"),
-        (".cursorrules", "兼容 Cursor 的规则文件"),
+        ("CLAUDE.md", "通用约定文件"),
+        (".cursorrules", "编辑器约定文件"),
     ]
     files = []
     for rel, purpose in candidates:
@@ -1785,7 +1826,7 @@ async def api_instruction_files(request: Any) -> Response:
 
 
 async def api_sandbox_probe(request: Any) -> Response:
-    """探测本机可用的 Shell 与常见依赖工具（对齐沙箱设置页）。"""
+    """探测本机可用的 Shell 与常见依赖工具（对应沙箱设置页）。"""
     if not _auth_ok(request):
         return _err("未授权", 401)
     import os as _os
@@ -1826,7 +1867,7 @@ async def api_sandbox_probe(request: Any) -> Response:
     git = which("git")
     wsl = which("wsl")
 
-    # 当前实际会用哪个 —— ★ 必须与 sandbox 的 bash 策略对齐，
+    # 当前实际会用哪个 —— ★ 必须与 sandbox 的 bash 策略一致，
     # 否则界面显示的「当前使用」与实际执行的解释器是两回事（用户改完看不到变化）。
     import platform
     mode = "auto"
@@ -2868,6 +2909,207 @@ async def api_remote(request: Any) -> Response:
     return _err(f"未知操作：{action}")
 
 
+async def api_lan(request: Any) -> Response:
+    """手机远程访问（局域网）：查状态 / 开关 / 取二维码。
+
+    ★ 为什么放在后端做：开监听、选端口、生成配对令牌都必须在服务进程里，
+      前端只负责显示二维码与链接。
+    """
+    if not _auth_ok(request):
+        return _err("未授权", 401)
+    from .lan import qr_svg, start, status, stop
+
+    if request.method == "GET":
+        d = status()
+        d["qr"] = qr_svg(d.get("url") or "") if d.get("url") else ""
+        return _json(d)
+
+    body = await _body(request)
+    action = str(body.get("action") or "")
+    if action == "on":
+        app = request.app if hasattr(request, "app") else None
+        if app is None:
+            try:
+                app = create_app()
+            except Exception:
+                app = None
+        d = await start(app, port=int(body.get("port") or 0), host=str(body.get("host") or ""))
+        d["qr"] = qr_svg(d.get("url") or "") if d.get("url") else ""
+        if d.get("error"):
+            return _json(d)
+        return _json(d)
+    if action == "off":
+        d = await stop()
+        return _json(d)
+    return _err(f"未知操作：{action}")
+
+
+async def api_storage(request: Any) -> Response:
+    """存储：占用统计 / 目录位置 / 移动。
+
+    ★ 只开放「不含活跃数据库句柄」的目录（见 paths.MOVABLE）—— 会话数据库
+      正被服务进程持有，Windows 下挪不动，强挪可能把库弄坏。
+    """
+    if not _auth_ok(request):
+        return _err("未授权", 401)
+    from .. import paths as _p
+
+    def dir_stat(p: Path) -> dict[str, Any]:
+        files = 0
+        size = 0
+        try:
+            for root, _dirs, names in os.walk(p):
+                for n in names:
+                    try:
+                        files += 1
+                        size += os.path.getsize(os.path.join(root, n))
+                    except OSError:
+                        continue
+        except OSError:
+            pass
+        return {"files": files, "bytes": size}
+
+    if request.method == "GET":
+        over = _p.overrides()
+        rows: list[dict[str, Any]] = []
+        for key, (label, desc) in _p.MOVABLE.items():
+            cur = _p.default_sub(key)
+            if over.get(key):
+                cur = Path(over[key]).expanduser()
+            st = dir_stat(cur)
+            rows.append({
+                "key": key, "label": label, "desc": desc, "movable": True,
+                "path": str(cur), "default_path": str(_p.default_sub(key)),
+                "custom": bool(over.get(key)), **st,
+            })
+        for key, (label, desc) in _p.FIXED.items():
+            cur = _p.home() / key
+            st = dir_stat(cur)
+            rows.append({
+                "key": key, "label": label, "desc": desc, "movable": False,
+                "path": str(cur), "default_path": str(cur),
+                "custom": False, **st,
+            })
+        total_files = sum(r["files"] for r in rows)
+        total_bytes = sum(r["bytes"] for r in rows)
+        disk = {}
+        try:
+            import shutil as _sh
+
+            u = _sh.disk_usage(str(_p.home()))
+            disk = {"total": u.total, "used": u.used, "free": u.free}
+        except OSError:
+            pass
+        return _json({"home": str(_p.home()), "items": rows, "disk": disk,
+                      "total": {"files": total_files, "bytes": total_bytes}})
+
+    body = await _body(request)
+    action = str(body.get("action") or "")
+    if action == "move":
+        key = str(body.get("key") or "")
+        if key not in _p.MOVABLE:
+            return _err(f"该目录不支持移动：{key}", 400)
+        target = str(body.get("path") or "").strip()
+        if not target:
+            return _err("缺少目标路径", 400)
+        src = _p.default_sub(key)
+        if _p.overrides().get(key):
+            src = Path(_p.overrides()[key]).expanduser()
+        dst = Path(target).expanduser()
+        try:
+            dst = dst.resolve()
+        except OSError:
+            pass
+        if dst == src:
+            return _err("目标与当前位置相同", 400)
+        # 目标在源目录**里面**会把内容套娃，也会在复制时无限递归
+        try:
+            if dst.is_relative_to(src):
+                return _err("目标目录不能在被移动目录的内部", 400)
+        except (ValueError, OSError):
+            pass
+        try:
+            import shutil as _sh
+
+            dst.mkdir(parents=True, exist_ok=True)
+            if src.exists():
+                for item in src.iterdir():
+                    tgt = dst / item.name
+                    if tgt.exists():
+                        return _err(f"目标目录里已有同名项：{item.name}，请换个位置", 400)
+                for item in src.iterdir():
+                    _sh.move(str(item), str(dst / item.name))
+        except OSError as e:
+            return _err(f"移动失败：{e}", 500)
+        cur = _p.overrides()
+        cur[key] = str(dst)
+        _p.save_overrides(cur)
+        return _json({"ok": True, "path": str(dst), "need_restart": True})
+
+    if action == "reset":
+        key = str(body.get("key") or "")
+        if key not in _p.MOVABLE:
+            return _err(f"该目录不支持移动：{key}", 400)
+        cur = _p.overrides()
+        old = cur.pop(key, "")
+        _p.save_overrides(cur)
+        return _json({"ok": True, "from": old, "need_restart": True})
+
+    return _err(f"未知操作：{action}")
+
+
+async def api_network(request: Any) -> Response:
+    """网络：查当前出网方式 / 保存设置 / 真实测试连接。
+
+    ★ 「测试连接」必须是**真请求** —— 只校验配置对不对说明不了「现在到底
+      能不能连上」，而那才是用户点这个按钮想知道的事。
+    """
+    if not _auth_ok(request):
+        return _err("未授权", 401)
+    from .. import net as _net
+
+    mgr = STATE.manager
+    if request.method == "GET":
+        cfg = getattr(mgr.config, "network", None)
+        return _json({
+            "mode": getattr(cfg, "mode", "system"),
+            "proxy_type": getattr(cfg, "proxy_type", "http"),
+            "proxy_host": getattr(cfg, "proxy_host", ""),
+            "proxy_port": getattr(cfg, "proxy_port", 0),
+            "proxy_user": getattr(cfg, "proxy_user", ""),
+            "has_pass": bool(getattr(cfg, "proxy_pass", "")),
+            "no_proxy": getattr(cfg, "no_proxy", ""),
+            "test_url": getattr(cfg, "test_url", ""),
+            "effective": _net.apply_to_env(mgr),
+            "env": {k: os.environ.get(k, "") for k in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY")
+                    if os.environ.get(k)},
+        })
+
+    body = await _body(request)
+    action = str(body.get("action") or "")
+    if action == "save":
+        patch: dict[str, Any] = {}
+        for k in ("mode", "proxy_type", "proxy_host", "proxy_port",
+                  "proxy_user", "no_proxy", "test_url"):
+            if k in body:
+                patch[k] = body[k]
+        # ★ 密码留空 = 「不改」，不能把已有密码清掉（前端不回显密码，也就没法回传）
+        if str(body.get("proxy_pass") or ""):
+            patch["proxy_pass"] = str(body["proxy_pass"])
+        try:
+            mgr.update({"network": patch})
+        except Exception as e:
+            return _err(f"保存失败：{e}", 400)
+        _reload_runtime()
+        return _json({"ok": True, "effective": _net.apply_to_env(mgr)})
+
+    if action == "test":
+        r = await _net.test_connection(mgr)
+        return _json(r)
+
+    return _err(f"未知操作：{action}")
+
+
 async def api_stats(request: Any) -> Response:
     if not _auth_ok(request):
         return _err("未授权", 401)
@@ -3159,6 +3401,12 @@ def create_app() -> Starlette:
         Route("/api/workflows", api_workflows, methods=["GET", "POST"]),
         Route("/api/jobs", api_jobs, methods=["GET", "POST"]),
         Route("/api/remote", api_remote, methods=["GET", "POST"]),
+    # 手机远程访问（局域网）
+    Route("/api/lan", api_lan, methods=["GET", "POST"]),
+    # 存储（占用统计 / 目录位置 / 移动）
+    Route("/api/storage", api_storage, methods=["GET", "POST"]),
+    # 网络（出网方式 / 代理 / 测试连接）
+    Route("/api/network", api_network, methods=["GET", "POST"]),
         # 其他
         Route("/api/stats", api_stats),
         Route("/api/workspace", api_workspace),
