@@ -1013,8 +1013,14 @@ async def api_account(request: Any) -> Response:
         return await _account_bind(acc, body)
 
     if action == "models":
+        # ★ 与绑定走同一条取模型的路：先看内置全模型密钥能调哪些，再退回账号分组并集。
+        #   否则界面「获取模型」列出来的和绑定后实际能用**不是同一份** —— 
+        #   用户会看到免费模型躺在列表里、勾上却调不通。
         try:
-            models = await acc.user_models()
+            key_info = await acc.builtin_key()
+            models = await acc.models_for_key(key_info.get("api_key") or "")
+            if not models:
+                models = await acc.user_models()
         except AccountError as e:
             return _json({"ok": False, "error": str(e), "account": acc.snapshot()}, 400)
         except Exception as e:  # noqa: BLE001
@@ -1025,10 +1031,13 @@ async def api_account(request: Any) -> Response:
 
 
 async def _account_bind(acc: Any, body: dict[str, Any]) -> Response:
-    """账号绑定：建（或复用）密钥 → 写进供应商 → 返回可用模型。
+    """账号绑定：取密钥 → 写进供应商 → 返回可用模型。
 
     ★★ 这条链路只在「账号」页提供：它要用登录态换来的密钥，
       没有登录态就没有密钥可绑，所以不登录时直接拒绝。
+    ★★ 密钥优先取**站点内置的全模型密钥**（``fengcode`` 分组）：它覆盖全部渠道
+      的全部模型（含免费模型）。取不到才退回「自己建一条」的老路径 ——
+      后者只能绑到账号自身分组上，模型范围窄（实测不含免费模型）。
     ★ 写进的是**单独的**供应商（默认 ``wanxiang-account``），
       不动用户自己手填的「万象 API」预设 —— 免得覆盖人家的密钥。
     ★ 供应商的模型列表**只放用户勾选启用的**；没勾选的不写进去。
@@ -1038,16 +1047,20 @@ async def _account_bind(acc: Any, body: dict[str, Any]) -> Response:
     if not acc.logged_in():
         return _json({"ok": False, "error": "请先登录账号"}, 400)
     try:
-        got = await acc.ensure_key()
+        got = await acc.builtin_key() or await acc.ensure_key()
     except AccountError as e:
         return _json({"ok": False, "error": str(e), "account": acc.snapshot()}, 400)
     except Exception as e:  # noqa: BLE001
         return _json({"ok": False, "error": f"绑定失败：{e}"}, 400)
 
-    try:
-        models = await acc.user_models()
-    except Exception:  # noqa: BLE001
-        models = []
+    # ★ 模型范围以**这把密钥自述的能力**为准，而不是账号的可用分组并集 ——
+    #   后者比密钥实际能调的模型多，填进供应商会出现「列表里有、一选就报无权访问」。
+    models = await acc.models_for_key(got.get("api_key") or "")
+    if not models:
+        try:
+            models = await acc.user_models()
+        except Exception:  # noqa: BLE001
+            models = []
 
     prefs = acc.prefs()
     pname = str(prefs.get("provider_name") or "wanxiang-account")

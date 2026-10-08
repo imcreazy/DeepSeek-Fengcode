@@ -739,6 +739,13 @@ class Agent:
         specs = self.tool_specs(allow=tools)
         ctx = self.tool_context(sid)
         step = 0
+        # ★★★ 本轮消息的起点。`msgs` 里同时装着**历史**（build_messages 拼进来的）与
+        #   本轮新增；收尾兜底若从整个 `msgs` 里「找最后一条有内容的 assistant」，
+        #   捞到的往往是**上一轮**的回答 —— 写库并作为本轮结果交付，界面上就成了
+        #   「我发的是新问题，它却把上一轮那段话又贴了一遍，还贴在思考和工具卡上面」
+        #   （实测坐实：库里 `你会什么` 之后写入的正是上一轮的「你好！我是 Fengcode…」）。
+        #   记下起点，兜底就只可能捞到本轮自己产出的文字。
+        turn_msg_start = len(msgs)
         final_text_parts: list[str] = []
         reasoning_parts: list[str] = []
         # ★ 流式期间已经逐字发给前端的正文（按步累积）。
@@ -1144,14 +1151,16 @@ class Agent:
 
         # ---- 收尾 ----
         # ★ 交付文字只取「本回合流式累积的正文」。
-        #   兜底分支（final_text_parts 为空时回捞历史）只在**本回合一个字都没产出**时使用，
-        #   并且回捞到的文字若与已产出内容重复，绝不再拼一次 ——
-        #   旧写法无条件 `content = self._last_assistant_text(msgs)`，会把历史里
-        #   前几轮已经写过的 assistant 文字再拼进来，实测出现 content="收到收到收到"
-        #   （模型分 2 步各说一次「收到」，界面渲染 2 段，后端却返回 3 段）。
+        #   兜底只在**本回合一个字都没产出**时使用，而且只能回捞**本回合自己**
+        #   写进 msgs 的那部分（turn_msg_start 之后的切片）。
+        #   ★★ 两条硬约束（实测坐实，之前各踩过一次）：
+        #   ① 不能从整个 msgs 找 —— 那会捞到**上一轮**的回答，写库后表现为
+        #      「答非所问：发新问题却贴回上一轮的答复，且位置在思考与工具卡之前」；
+        #   ② **出错时一律不回落** —— 模型调用失败说明本轮压根没产出，此时再回捞
+        #      只会把旧回答伪装成本轮结果，用户看到「报错了，但下面又冒出一段回答」。
         content = "".join(p for p in final_text_parts if p).strip()
-        if not content:
-            content = self._last_assistant_text(msgs) or ""
+        if not content and not result.error:
+            content = self._last_assistant_text(msgs[turn_msg_start:]) or ""
         reasoning = "".join(p for p in reasoning_parts if p).strip()
         # ★ 重复交付防护：流式模式下这段正文已逐字发给前端并渲染完成，
         #   若此处再作为 result.content 返回，前端会整段重绘 —— 表现为同一段回答

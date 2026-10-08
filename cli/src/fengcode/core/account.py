@@ -465,6 +465,73 @@ class AccountManager:
         items = ((body.get("data") or {}).get("items")) or []
         return [it for it in items if isinstance(it, dict)]
 
+    async def builtin_key(self) -> dict[str, Any]:
+        """用登录态换站点给的**全模型内置密钥**（``GET /api/user/fengcode-key``）。
+
+        ★★ 为什么优先用它而不是自己建密钥：站点上有一个叫 ``fengcode`` 的分组，
+          它收录**全部渠道的全部模型**（含免费模型），随渠道/模型增删自动跟随；
+          每个账号（含新注册）都静默持有该分组的一条密钥，站点有意留出这个接口
+          让客户端以登录态换取。而自己建的密钥只能绑到**账号自身分组**上 ——
+          实测该分组只有 12 个模型，免费模型、生图模型全都不在里面。
+        ★ 拿不到（站点版本较旧、未开通该分组等）不是错误：调用方据此回退到
+          :meth:`ensure_key` 的老路径，链路不能因为站点少一个接口就整体失败。
+        """
+        async with self._lock:
+            if not self.logged_in():
+                raise AccountError("请先登录账号")
+            tok = await self._access_token()
+            d = self._load()
+            base = d.get("base_url") or self.base_url()
+            async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as cli:
+                try:
+                    body = await self._get(cli, "/api/user/fengcode-key", tok)
+                except AccountError:
+                    return {}
+                data = body.get("data") or {}
+                raw = str(data.get("key") or "").strip()
+                if not raw:
+                    return {}
+                group = str(data.get("group") or "")
+                d = self._load()
+                d["key_group"] = group
+                d["key_ready"] = True
+                d["key_builtin"] = True
+                self._save(d)
+                return {"api_key": raw, "key_id": 0, "group": group,
+                        "base_url": base, "builtin": True}
+
+    async def models_for_key(self, api_key: str) -> list[str]:
+        """这把密钥**真正能调**的模型（``GET /v1/models``）。
+
+        ★ 站点的 ``/api/user/models`` 返回的是「用户可用分组的并集」，
+          比密钥实际能访问的范围**大**；直接拿它填进供应商，界面就会列出
+          一堆选了必然报「无权访问模型 / 没有可用渠道」的名字。
+          以密钥自述为准，才与真实可用范围一致。
+        """
+        key = str(api_key or "").strip()
+        if not key:
+            return []
+        d = self._load()
+        base = (d.get("base_url") or self.base_url()).rstrip("/")
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as cli:
+                resp = await cli.get(
+                    f"{base}/v1/models", headers={"Authorization": "Bearer " + key}
+                )
+            body = _payload(resp)
+        except Exception:  # noqa: BLE001
+            return []
+        items = body.get("data")
+        if not isinstance(items, list):
+            return []
+        out: list[str] = []
+        for it in items:
+            mid = it.get("id") if isinstance(it, dict) else it
+            mid = str(mid or "").strip()
+            if mid and mid not in out:
+                out.append(mid)
+        return out
+
     async def ensure_key(self) -> dict[str, Any]:
         """确保账号下有一条可用的密钥，返回它的明文与站点地址。
 

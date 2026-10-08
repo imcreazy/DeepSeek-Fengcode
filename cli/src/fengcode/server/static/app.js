@@ -3563,7 +3563,13 @@ async function send(opts) {
       const t = await res.text();
       let msg = t.slice(0, 300);
       try { msg = JSON.parse(t).error || msg; } catch (e) {}
-      throw new Error(msg);
+      const err = new Error(msg);
+      // ★★ 标记为「确定性失败」：后端已经明确答复了这次请求（4xx/5xx 带原因），
+      //   重发整轮**不会有不同结果**，只会让后端再跑一遍、再写一条用户消息 ——
+      //   实测的「报错之后又冒出一条重复消息」正是这么来的。
+      //   只有**连接层面**的中断（fetch 抛异常、流读到一半断）才值得重试。
+      err.deterministic = true;
+      throw err;
     }
     const reader = res.body.getReader();
     const dec = new TextDecoder();
@@ -3620,6 +3626,11 @@ async function send(opts) {
         lastErr = e;
         // 用户主动停止 / 已收到完整结果：不再重试
         if (streamDone || T._cancelled) { lastErr = null; break; }
+        // ★★ 后端已明确拒绝（如 503 model_not_found / 409 会话忙 / 400 参数问题）：
+        //   重发整轮只会让后端再跑一遍、再写一条用户消息，结果一模一样 ——
+        //   实测「报错之后聊天记录里多出一条重复消息」就是这么产生的。
+        //   这类失败直接如实报错，不重试。
+        if (e && e.deterministic) { break; }
         if (attempt === 0) {
           if (uiLive()) setStatus("busy", "连接中断，正在自动重试…");
           withBox(sid, () => {
@@ -3760,6 +3771,10 @@ async function recoverFinalText(c, sid) {
   const key = sid || S.sessionId || "";
   if (!key) return false;
   if (c && (c._recovered || c._sawAssistantText)) return false;
+  // ★★ 本回合**出过错**一律不补：出错说明本轮没有产出，而这里是从会话记录里
+  //   找「最后一条有内容的 assistant」—— 本轮没写库时捞到的必然是上一轮的，
+  //   贴出来就是「报错之后又冒出一段回答」，且那句是上一轮的内容（实测坐实）。
+  if (c && c._errored) return false;
   // ★ 被主动停止的本轮**一律不补**：停止的回合没有「最终交付文字」可言，
   //   后端也不为它落库（core/agent.py 的 `if content:`），硬补只会把
   //   上一轮的旧回答翻出来重贴一遍 —— 实测「发的自行车，却冒出上一句你好」。
@@ -4172,6 +4187,11 @@ function handleEvent(ev, c) {
     }
     case "error": {
       // 出错：把「正在回复…」占位气泡标成失败，再补一条错误详情
+      // ★★ 必须在本上下文记下「本回合出过错」：收尾兜底据此**拒绝补发正文**。
+      //   为什么：出错说明本轮压根没产出，而补发逻辑是「从会话记录里找最后一条有内容的
+      //   assistant」—— 本轮没写库时，捞到的必然是**上一轮**的，贴出来就成了
+      //   「明明报错了，下面却又冒出一段回答」，而且那句回答是上一轮的内容（实测坐实）。
+      c._errored = true;
       if (c.pending && c.pending.isConnected) {
         const m = c.pending.closest(".msg");
         if (m) {
@@ -5962,7 +5982,9 @@ PAGES.plugins = async () => {
             ${p.enabled
               ? `<button class="btn sm ghost" data-off="${esc(p.name)}">停用</button>`
               : `<button class="btn sm ghost" data-on="${esc(p.name)}">启用</button>`}
-            ${!p.builtin ? `<button class="btn sm ghost danger" data-del="${esc(p.name)}">卸载</button>` : ""}
+            ${!p.builtin
+              ? `<button class="btn sm ghost danger" data-del="${esc(p.name)}">卸载</button>`
+              : '<span class="hint" title="内置插件随程序自带，删掉会影响内置能力，所以只允许停用；自己新建或安装的插件可以卸载。">内置 · 不可卸载</span>'}
           </td></tr>`).join("")}</tbody></table>`
         : `<div class="empty"><div class="big">${icon("puzzle", 34)}</div>还没有插件。点「新建插件」就能建一个。</div>`}
     </div>
@@ -6879,9 +6901,8 @@ PAGES.settings = async () => {
           <button class="btn sm ghost danger" data-pdel="${esc(p.name)}">删除</button>
         </div>
         <div class="mono" style="font-size:11px;color:var(--text-dim);margin-bottom:8px">${esc(p.base_url || "(未填地址)")}</div>
-        ${models.length ? `<div class="mhead"><span></span><span>模型</span>
-          <span class="mfields"><span>上下文窗口</span><span>输出上限</span><span></span></span></div>`
-          + models.map((m) => modelRowHtml(p, m)).join("")
+        ${models.length
+          ? models.map((m) => modelRowHtml(p, m)).join("")
           : '<div class="help">还没有模型。点「测试并获取模型」拉取，或在「编辑」里手填。</div>'}
         <div class="help" style="margin-top:8px">
           留空即不限制（交给上游）；<b>单价填了才会算费用</b>，不填一律记 0。
@@ -7435,28 +7456,35 @@ function modelRowHtml(p, m) {
     <div class="mname" title="${esc(m)}">${esc(m)}
       ${supported ? "" : '<span class="tag" style="margin-left:6px">自定义</span>'}
     </div>
-    <div class="mfields">
-      <label title="这个模型能装多少上下文，自己填数字；留空=不限制">上下文窗口
-        <input type="number" data-mf="context_window" value="${ov.context_window || ""}"
-          placeholder="如 1048576"></label>
-      <label title="单次最多能输出多少 token，自己填数字；留空=不限制">输出上限
-        <input type="number" data-mf="max_output_tokens" value="${ov.max_output_tokens || ""}"
-          placeholder="如 384000"></label>
-      <label class="mvis" title="这个模型能不能读图">
-        <input type="checkbox" data-mf="vision"${ov.vision ? " checked" : ""}>支持图片</label>
-    </div>
-    <!-- ★ 单价：填了才会算费用，留空一律显示 0。单位见下方说明。 -->
-    <div class="mfields mprice">
-      <label title="每百万输入 token 多少钱（未命中缓存的部分）">输入价
-        <input type="number" step="0.0001" data-mf="price_input" value="${pr.input != null ? pr.input : ""}"
-          placeholder="如 0.35"></label>
-      <label title="每百万输出 token 多少钱">输出价
-        <input type="number" step="0.0001" data-mf="price_output" value="${pr.output != null ? pr.output : ""}"
-          placeholder="如 1.28"></label>
-      <label title="每百万「命中缓存」的输入 token 多少钱；留空按输入价算">缓存价
-        <input type="number" step="0.0001" data-mf="price_cache" value="${pr.cache_hit != null ? pr.cache_hit : ""}"
-          placeholder="可留空"></label>
-      <span class="mnote">元 / 百万 token</span>
+    <!-- ★★ 整个字段区分两组、各占一行，且**整体只放一个容器**里。
+       旧写法把两组并成网格的第 3、第 4 个子元素，而这一行只有 3 列 ——
+       第二组被自动排到第二行第 1 列（26px 宽），价格字段于是从最左侧溢出。 -->
+    <div class="mcfg">
+      <div class="mline">
+        <span class="mtag">容量</span>
+        <label title="这个模型能装多少上下文，自己填数字；留空=不限制">上下文窗口
+          <input type="number" data-mf="context_window" value="${ov.context_window || ""}"
+            placeholder="如 1048576"></label>
+        <label title="单次最多能输出多少 token，自己填数字；留空=不限制">输出上限
+          <input type="number" data-mf="max_output_tokens" value="${ov.max_output_tokens || ""}"
+            placeholder="如 384000"></label>
+        <label class="mvis" title="这个模型能不能读图">
+          <input type="checkbox" data-mf="vision"${ov.vision ? " checked" : ""}>支持图片</label>
+      </div>
+      <!-- ★ 单价：填了才会算费用，留空一律显示 0。 -->
+      <div class="mline mprice">
+        <span class="mtag">单价</span>
+        <label title="每百万输入 token 多少钱（未命中缓存的部分）">输入
+          <input type="number" step="0.0001" data-mf="price_input" value="${pr.input != null ? pr.input : ""}"
+            placeholder="如 0.35"></label>
+        <label title="每百万输出 token 多少钱">输出
+          <input type="number" step="0.0001" data-mf="price_output" value="${pr.output != null ? pr.output : ""}"
+            placeholder="如 1.28"></label>
+        <label title="每百万「命中缓存」的输入 token 多少钱；留空按输入价算">缓存
+          <input type="number" step="0.0001" data-mf="price_cache" value="${pr.cache_hit != null ? pr.cache_hit : ""}"
+            placeholder="可留空"></label>
+        <span class="mnote">元 / 百万 token</span>
+      </div>
     </div>
   </div>`;
 }

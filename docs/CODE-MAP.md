@@ -128,6 +128,7 @@
 | 内置浏览器（右侧栏） | `tools/builtin/browser.py` + `app.js` 的 `IP_TAB` 相关 |
 | 主题（配色/图片主题） | `applyTheme()` / `applySkin()` / `applyImageTheme()` / `syncImageThemeDim()` |
 | 字号缩放 | `applyFontSize()`（写 `html[data-fs]`，样式全部 `calc(Npx * var(--ui-scale))`） |
+| **逐模型配置行** | `modelRowHtml()` / `bindModelRows()` —— 模型服务页与账号页**共用同一套渲染与绑定**。★★ 结构硬约束：字段区必须**整体只包在一个 `.mcfg` 里**（内含「容量」「单价」两个 `.mline`）。旧写法把两组并列成 `.mrow` 网格的第 3、第 4 个子元素，而该行只有 3 列 → 第 4 个被自动排到**第二行第 1 列**（26px 宽），价格字段从整行最左侧溢出、与上方字段完全错位（实测 x=273 vs x=521）。改这块前先看 `app.css` 里 `.mrow` / `.mcfg` 段落的说明 |
 
 ### 3.5 ★★ 会话级运行状态与「多对话并行」（改这几块前必读）
 
@@ -347,10 +348,12 @@
 | 指令文件列举 | `server/app.py::api_instruction_files()` | 列出工作区里的约定文件位置 |
 | 排队事件 | `events.py::Ev.WORKSPACE_QUEUE` | 排队状态变化时按**排队者自己的** session_id 下发（只有它的界面收得到）；SSE 与 WS 两条通道都接 |
 | **账号代理接口** | `server/app.py::api_account()` | `GET /api/account` 取本地快照（不发网络）；`POST` 的 `action` 为 `login` / `refresh` / `logout` / `prompt_done` / `bind` / `models`。★ 走服务端代理的原因：站点的用户接口不返跨域头（**预检有头、真实响应没有**），界面直连拿不到数据；顺带让凭证不出后端 |
-| **账号绑定（一键接入模型）** | `server/app.py::_account_bind()` | 未登录直接拒绝 → `ensure_key()` 拿密钥 → `user_models()` 取模型 → 写进**单独一条**「万象账号」供应商（默认 `wanxiang-account`，**不碰**用户手填的万象预设）→ 带思考参数 → 只写用户勾选启用的模型 |
+| **账号绑定（一键接入模型）** | `server/app.py::_account_bind()` | 未登录直接拒绝 → **优先** `builtin_key()` 取站点内置全模型密钥、取不到才 `ensure_key()` 自建 → `models_for_key()` 以**密钥自述范围**取模型（比账号分组并集准）→ 写进**单独一条**「万象账号」供应商（默认 `wanxiang-account`，**不碰**用户手填的万象预设）→ 带思考参数 → 只写用户勾选启用的模型 |
 | **账号首屏快照** | `server/app.py::_account_snapshot()` | 供 `/api/bootstrap` 的 `account` 字段；只读本地、任何异常退回未登录，不拖慢首屏 |
-| **账号核心** | `core/account.py::AccountManager` | `login()` / `self()` / `logout()` / `snapshot()` / `ensure_key()` / `user_models()`；凭证存 `config/account.json`（仅服务端可读），密码不落盘，存 30 天 refresh 凭证并按需换 15 分钟的 access token |
-| **确保密钥** | `core/account.py::AccountManager.ensure_key()` | 先按名字复用已有密钥，没有才建；★ 建完**必须回查列表**才能拿 id（建密钥接口只返成功、不返 key 也不返 id），再凭 id 换取明文；设 `unlimited_quota=True` 使钱从**账号余额**扣 |
+| **账号核心** | `core/account.py::AccountManager` | `login()` / `self()` / `logout()` / `snapshot()` / `builtin_key()` / `models_for_key()` / `ensure_key()` / `user_models()`；凭证存 `config/account.json`（仅服务端可读），密码不落盘，存 30 天 refresh 凭证并按需换 15 分钟的 access token |
+| **取站点内置密钥** | `core/account.py::AccountManager.builtin_key()` | 以登录态调 `GET /api/user/fengcode-key` 换站点上那条**全模型**密钥（`fengcode` 分组含免费模型与生图模型）。★★ 站点上有一个 `fengcode` 分组收录**全部渠道的全部模型**，且每个账号（含新注册）都静默持有一条该分组的密钥 —— 所以这是拿「全部模型」的正路，自建密钥只能绑到账号自身分组、范围窄。站点没有该接口时返回空 dict 让调用方回退 |
+| **取密钥自述模型** | `core/account.py::AccountManager.models_for_key()` | 用密钥调 `GET /v1/models`，得到**这把密钥真正能调**的模型。★ 为什么不用 `/api/user/models`：它返回**用户可用分组的并集**，比密钥实际范围大，填进供应商就会出现「列表里有、一选就报无权访问模型 / 没有可用渠道」 |
+| **确保密钥（回退路径）** | `core/account.py::AccountManager.ensure_key()` | 先按名字复用已有密钥，没有才建；★ 建完**必须回查列表**才能拿 id（建密钥接口只返成功、不返 key 也不返 id），再凭 id 换取明文；设 `unlimited_quota=True` 使钱从**账号余额**扣 |
 
 ---
 
@@ -395,6 +398,12 @@
 三条防线：① `log()` 里 `console.log` 包 `try/catch`；② `logCrash()` 用一次性标记防重入 + 兜底 try；③ 日志轮转（`LOG_MAX_BYTES` 8MB × `LOG_KEEP` 3 份）。
 ★ 回归防线：`desktop/tests/test_log_guard.cjs`（从 `main.js` 取真实实现来跑）。
 ★ 诊断线索：主进程 CPU 持续 ≈100% 单核而渲染进程/后端接近 0 → 先看 `%APPDATA%\fengcode-desktop\logs\desktop.log` 的大小与末尾内容。
+
+★★ **界面加载的硬约束（1.3.0 故障后定的，别改回去）**：加载真实界面**只有一个入口** `loadAppUI()`，判据是**后端探活**，绝不能用 `loadURL(...).catch(...)` 的 promise 成败。
+踩过的坑：用户重启电脑后打不开，界面是「无法连接 Fengcode 后端」，而后端其实已起来并在服务（同一秒日志有 `WebSocket /ws [accepted]`，`GET /api/status` 返回 200）。日志里那条报错的 URL 是**骨架屏自己** —— 说明失败来自「骨架屏那次导航被后一次导航顶掉」的 `ERR_ABORTED (-3)`，与后端健康无关。旧代码一 reject 就把**已经画好的正常界面**换成错误页，是否触发取决于两次导航的先后，所以表现为「时好时坏、重启就打不开」。
+两层修法：① 进入时先 `webContents.stop()` 掉在途的骨架屏导航（句柄记在 `splashNav`）；② 加载失败后**再探活一次**，后端活着就重试加载，只有真连不上才 `showOfflinePage()`。
+★ 四个调用点都必须走它：启动主路径、托盘「重启后端」、IPC `fengcode:restartBackend`、后端崩溃后的自动重启。
+★ 回归防线：`desktop/tests/test_window_load.cjs`（从 `main.js` 取真实实现来跑）。
 
 ---
 

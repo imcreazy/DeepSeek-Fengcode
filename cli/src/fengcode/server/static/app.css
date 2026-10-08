@@ -675,57 +675,73 @@ body.resizing-x, body.resizing-x * { cursor: ew-resize !important; }
 }
 #settings-body .sec-title:first-of-type { margin-top: 0; }
 
-/* ---- 模型服务：逐模型一行（勾选启用 + 单独配置） ---- */
-.mhead, .mrow {
-  display: grid; grid-template-columns: 26px minmax(90px, 1fr) auto;
-  align-items: center; gap: 8px;
-}
-.mhead {
-  font-size: calc(10.5px * var(--ui-scale)); color: var(--text-faint);
-  padding: 4px 0 3px; border-bottom: 1px solid var(--border); margin-bottom: 3px;
-}
-.mhead .mfields { display: flex; gap: 8px; }
-.mhead .mfields > span { width: 132px; text-align: left; }
-.mhead .mfields > span:last-child { width: 84px; }
+/* ---- 模型服务：逐模型一行（勾选启用 + 单独配置） ----
+   ★ 布局硬约束（实测过一处真缺陷，改前先读懂）：
+     字段区必须**整体只占一个网格单元**。旧写法把「容量」与「单价」两个 .mfields
+     并列成网格的第 3、第 4 个子元素，而这一行只有 3 列 —— 第 4 个被网格自动排到
+     **第二行第 1 列**（宽仅 26px），于是三个价格输入框从整行**最左侧**溢出
+     （实测 x=273，而上方字段在 x=521），两行完全错位，看着就是一堆乱方框。
+   ★ 视觉取向：字段用「下划线 + 等宽数字」而不是带底色的方框。
+     一行里六七个方框边框叠在一起最刺眼，而这里的信息本质是「标签 + 数值」，
+     下划线足够表达输入区，焦点态再用主色加浓。 */
 .mrow {
-  padding: 5px 0; border-bottom: 1px dashed var(--border);
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  align-items: center; gap: 5px 10px;
+  padding: 7px 0; border-bottom: 1px dashed var(--border);
 }
 .mrow:last-of-type { border-bottom: none; }
-.mrow .mck { margin: 0; }
+.mrow .mck { grid-column: 1; grid-row: 1; margin: 0; }
 .mrow .mck input { width: auto; margin: 0; }
 .mrow .mname {
+  grid-column: 2; grid-row: 1;
   font-size: calc(12.5px * var(--ui-scale)); color: var(--text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-family: "SF Mono", Consolas, monospace;
 }
 .mrow.off .mname { color: var(--text-faint); }
-.mrow .mfields { display: flex; align-items: center; gap: 8px; }
-.mrow .mfields > label {
-  display: flex; align-items: center; gap: 5px;
+
+/* 字段区：两行（容量 / 单价）共用一套网格列，输入框才能上下对齐成列 */
+.mcfg {
+  grid-column: 2; grid-row: 2;
+  display: grid; gap: 3px;
   font-size: calc(10.5px * var(--ui-scale)); color: var(--text-dim);
-  white-space: nowrap;
 }
-/* ★ 输入框必须能完整显示 7 位数（如 1048576）：
-   旧写法挂了固定宽度 108px，7 位数字会被截成「1048」。
-   这里给足宽度 + 用等宽数字，同时允许在窄窗口下收缩。 */
-.mrow .mfields input[type="number"] {
-  width: 132px; padding: 4px 8px; font-size: calc(12px * var(--ui-scale));
-  border: 1px solid var(--border); border-radius: 7px;
-  background: var(--bg-sunken); color: var(--text);
+/* 每一行 = 同名小标题 + 一组「标签 + 数值」；两行都从同一个 x 起，形成分组 */
+.mcfg .mline {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px 16px;
+}
+.mcfg .mtag {
+  flex: none; width: 30px;
+  color: var(--text-faint); letter-spacing: .06em;
+}
+.mcfg .mline > label {
+  display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+}
+/* ★ 输入框必须能完整显示 7 位数（如 1048576）：旧写法挂固定宽度，7 位会被截成「1048」。
+   这里给足宽度 + 等宽数字，并去掉左右内边距让下划线长度即数值可用宽度。 */
+.mcfg input[type="number"] {
+  width: 104px; padding: 3px 1px;
+  border: none; border-bottom: 1px solid var(--border); border-radius: 0;
+  background: transparent; color: var(--text);
+  font-size: calc(12px * var(--ui-scale));
   font-variant-numeric: tabular-nums;
+  transition: border-color .15s, box-shadow .15s;
 }
-.mrow .mfields > label.mvis {
-  flex: none; gap: 5px;
+.mcfg input[type="number"]:hover { border-bottom-color: var(--text-faint); }
+.mcfg input[type="number"]:focus {
+  outline: none; border-bottom-color: var(--accent);
+  box-shadow: 0 1px 0 0 var(--accent);
 }
-.mrow .mfields > label.mvis input { width: auto; }
-/* 未勾选启用的模型行整体降透明度，一眼能看出「这个没启用」 */
-.mrow.off .mfields { opacity: .5; }
-/* ★ 单价那一行：与上面三项对齐，宽度略窄（金额通常只有几位数）。 */
-.mrow .mfields.mprice { margin-top: 4px; }
-.mrow .mfields.mprice input[type="number"] { width: 96px; }
-.mrow .mfields.mprice .mnote {
+/* 单价通常只有几位数，窄一点，也让两行的节奏有区别 */
+.mcfg .mprice input[type="number"] { width: 84px; }
+.mcfg .mline > label.mvis { flex: none; gap: 5px; }
+.mcfg .mline > label.mvis input { width: auto; }
+.mcfg .mnote {
   font-size: calc(10.5px * var(--ui-scale)); color: var(--text-faint); white-space: nowrap;
 }
+/* 未勾选启用的模型行整体降透明度，一眼能看出「这个没启用」 */
+.mrow.off .mcfg { opacity: .5; }
 
 /* 对话内导航：右侧一列小横杠，点击跳到对应的用户消息 */
 #msg-nav {

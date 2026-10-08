@@ -65,6 +65,9 @@ let backend = null;          // Python 子进程
 let backendStartedByUs = false;
 let quitting = false;
 let restartAttempts = 0;
+// 骨架屏那次导航的句柄。★ 存在的意义：骨架屏与真实界面**不能同时发起导航**，
+// 后一次会把前一次顶掉并产生 ERR_ABORTED（见 loadAppUI 的说明）。
+let splashNav = null;
 const MAX_RESTART = 3;
 
 // ---------------------------------------------------------------- 日志
@@ -234,7 +237,9 @@ async function startBackend() {
         log(`尝试重启后端（第 ${restartAttempts} 次）`);
         setTimeout(async () => {
           if (await startBackend()) {
-            if (mainWindow) mainWindow.loadURL(BASE_URL);
+            // ★ 走统一的加载入口：它的判据是「后端探活」，不会因为导航竞态
+            //   产生的 ERR_ABORTED 就把界面判成「连不上」。
+            await loadAppUI("后端已重启");
           }
         }, 1500);
       } else {
@@ -463,7 +468,7 @@ function createWindow() {
       </div>
     </body></html>`);
 
-  mainWindow.loadURL(SPLASH).catch(() => {});
+  splashNav = mainWindow.loadURL(SPLASH).catch(() => {});
 
   // ★ 右键菜单：桌面版此前**完全没有**这个功能 —— Electron 不像浏览器那样自带右键菜单，
   //   不主动实现就什么都弹不出来，用户反映「对话区右键不能复制/粘贴」正是这个原因。
@@ -913,7 +918,7 @@ function createTray() {
       click: async () => {
         stopBackend();
         await new Promise((r) => setTimeout(r, 800));
-        if (await startBackend() && mainWindow) mainWindow.loadURL(BASE_URL);
+        if (await startBackend()) await loadAppUI("手动重启后端");
       },
     },
     { label: "环境自检", click: runDoctor },
@@ -1067,7 +1072,7 @@ ipcMain.handle("fengcode:restartBackend", async () => {
   stopBackend();
   await new Promise((r) => setTimeout(r, 800));
   const ok = await startBackend();
-  if (ok && mainWindow) mainWindow.loadURL(BASE_URL);
+  if (ok) await loadAppUI("界面里点重启后端");
   return ok;
 });
 
@@ -1135,6 +1140,73 @@ ipcMain.handle("fengcode:browserScreenshot", async () => {
   }
 });
 
+// ---------------------------------------------------------------- 界面加载
+
+/** 错误页：只在**确认后端不可用**时才显示。 */
+function showOfflinePage(why) {
+  if (!mainWindow) return;
+  try {
+    mainWindow.loadURL(
+      "data:text/html;charset=utf-8," +
+        encodeURIComponent(
+          `<body style="font-family:system-ui;padding:40px;color:#333">
+           <h2>无法连接 Fengcode 后端</h2>
+           <p>请确认服务已启动，或查看日志目录。</p>
+           <p style="color:#666;font-size:13px">${BASE_URL}</p>
+           <p style="color:#999;font-size:12px">${why || ""}</p></body>`
+        )
+    ).catch(() => {});
+  } catch (e) {
+    log("显示错误页失败：", e.message);
+  }
+}
+
+/**
+ * 加载真实界面。
+ *
+ * ★★★ 判据只能是「后端探活」，**绝不能用 loadURL 的 promise 成败**。
+ *   实测事故：用户重启电脑后打不开，界面是「无法连接 Fengcode 后端」，
+ *   而后端其实**已经起来并在服务**（日志同时刻有 `WebSocket /ws [accepted]`，
+ *   手动请求 `/api/status` 返回 200）。日志里那条报错是：
+ *      加载界面失败： (-3) loading 'data:text/html;charset=utf-8,...'
+ *   注意报错里带的 URL 是**骨架屏自己** —— 说明这次失败是「骨架屏那次导航
+ *   被后一次导航顶掉」产生的 ERR_ABORTED，跟后端健不健康毫无关系。
+ *   Electron 的 loadURL 会在这类「已被取代 / 中途取消」的情况下 reject，
+ *   旧代码一 reject 就把**已经画出来的正常界面**替换成错误页 —— 于是好的也变坏的，
+ *   而且是否触发取决于两次导航的先后（慢机器/刚开机时最容易撞上），
+ *   所以表现为「时好时坏、重启电脑就打不开」。
+ *   ★ 修法两层：① 先 `stop()` 掉骨架屏那次导航，避免它被顶掉；
+ *   ② 加载失败后**再探活一次**，后端活着就重试加载，只有真连不上才亮错误页。
+ */
+async function loadAppUI(reason) {
+  if (!mainWindow) return false;
+  // ① 先停掉还在进行中的骨架屏导航，避免它被本次导航顶掉而报错
+  try { mainWindow.webContents.stop(); } catch (e) {}
+  try { await splashNav; } catch (e) {}
+  try {
+    await mainWindow.loadURL(BASE_URL);
+    return true;
+  } catch (e) {
+    // ② promise 失败不代表后端不可用 —— 以后端探活为准
+    const aborted = /-3\b|ERR_ABORTED/.test(String(e && e.message));
+    log("加载界面未成功：", e && e.message, aborted ? "(ERR_ABORTED，属于导航竞态)" : "");
+    const alive = await probeHealth();
+    if (alive) {
+      log("后端仍在服务，重试加载界面");
+      try {
+        await mainWindow.loadURL(BASE_URL);
+        return true;
+      } catch (e2) {
+        log("重试加载界面仍失败：", e2 && e2.message);
+      }
+    } else {
+      log("后端探活失败，显示错误页");
+    }
+    showOfflinePage(reason || "");
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------- 生命周期
 
 // 单实例：第二次启动就把已有窗口拉起来
@@ -1158,21 +1230,9 @@ if (!gotLock) {
     //   即使界面没打开「浏览器」标签也照常轮询 —— 工具调用不该依赖用户当前看哪个面板。
     startBrowserBridge();
     if (ok && mainWindow) {
-      // 后端好了，切到真实界面（失败时给一张错误页）
-      mainWindow.loadURL(BASE_URL).catch((e) => {
-        log("加载界面失败：", e.message);
-        if (mainWindow) {
-          mainWindow.loadURL(
-            "data:text/html;charset=utf-8," +
-              encodeURIComponent(
-                `<body style="font-family:system-ui;padding:40px;color:#333">
-                 <h2>无法连接 Fengcode 后端</h2>
-                 <p>请确认服务已启动，或查看日志目录。</p>
-                 <p style="color:#666;font-size:13px">${BASE_URL}</p></body>`
-              )
-          );
-        }
-      });
+      // 后端好了，切到真实界面。★ 用 loadAppUI：它先停掉骨架屏导航再加载，
+      //   失败时也以后端探活为准，不会因为导航竞态误亮「无法连接」。
+      await loadAppUI("启动加载");
     }
 
     // 全局快捷键：随时唤起
