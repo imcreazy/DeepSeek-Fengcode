@@ -497,7 +497,7 @@ class ConfigManager:
             # ★ 判定顺序必须把「逐模型覆盖」放最前：用户在模型服务页给某个模型
             #   单独填了上下文窗口，那就是他显式设置的值，来源应记为 model。
             #   之前漏了这一支，导致填完窗口界面仍按 fallback 判成「未限制」
-            #   （实测反馈：设了上下文，右侧栏还是显示未限制）。
+            #   （实际使用中：设了上下文，右侧栏还是显示未限制）。
             ov_used = None
             if provider is not None:
                 ov_used = provider.model_overrides.get(model) or _find_override(provider, model)

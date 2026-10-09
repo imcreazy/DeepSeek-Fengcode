@@ -570,7 +570,7 @@ class AccountManager:
                                 "name": key_name,
                                 "group": want_group,
                                 # ★ 密钥本身不限额度：钱从**账号余额**里扣（见方案说明）。
-                                #   设成固定额度会变成「密钥里有钱、账号余额不动」，不是我们要的。
+                                #   设成固定额度会变成「密钥里有钱、账号余额不动」，不是预期行为。
                                 "unlimited_quota": True,
                                 "expired_time": -1,
                                 "remain_quota": 0,

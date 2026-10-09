@@ -34,6 +34,80 @@ function chk(sel) {
   const el = $(sel);
   return el ? el.checked : undefined;
 }
+
+/* ---------------- 下拉框 → 分段按钮组（1.5.0） ----------------
+   ★ 为什么保留原来的 <select>：全站的保存逻辑都靠 `val("p-mode")` 这类读 `.value`，
+     若换成 div，`.value` 就成了 undefined，得把每一处读取点都改一遍 ——
+     那才是引入 bug 的路子。这里只把 select 藏起来当**取值来源**，
+     按钮点击时写回它的 value 并派发 change，既有的 onchange 与保存全部照旧。
+   ★ 只升级**白名单**里的这几项：选项固定的 2~5 档选择。
+     模型、网卡、目录这类下拉是**动态列表**（选项由后端给、长短不一），
+     换成按钮组会挤成一团，用户也明确说了「模型服务里的选择模型除外」。 */
+const SEG_SELECTS = [
+  "p-mode",             // 权限等级（只读 / 询问 / 工作区放行 / 完全权限）
+  "g-default-perm",     // 新会话默认权限
+  "g-theme", "u-theme", // 明暗模式
+  "g-currency",         // 币种
+  "g-font",             // 界面字体
+  "g-fontsize", "u-fontsize", // 字号档位
+  "g-close",            // 关闭窗口时的行为
+  "a-subagent-effort",  // 子代理推理强度
+  "sb-shell",           // Shell 解释器
+  "net-type",           // 网络协议
+];
+
+/** 把一个 <select> 升级成分段按钮组；已在白名单外或选项数不合适则跳过。 */
+function upgradeSelect(sel) {
+  if (!sel || sel.dataset.segDone) return;
+  const opts = Array.from(sel.options || []);
+  // 1 项没得选；超过 5 项按钮组会挤成两行以上，不如保留下拉
+  if (opts.length < 2 || opts.length > 5) return;
+  sel.dataset.segDone = "1";
+  const box = document.createElement("div");
+  box.className = "seg";
+  box.setAttribute("role", "group");
+  const label = sel.getAttribute("aria-label") || sel.id;
+  box.setAttribute("aria-label", label);
+  opts.forEach((o) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "seg-btn" + (o.selected ? " active" : "");
+    const full = (o.textContent || "").trim();
+    // ★ 按钮文字要短：选项原文常带补充说明，整句搬进按钮会把一排按钮撑得很宽。
+    //   依次剥掉「—— 说明」与末尾括号，完整文案放 title，悬停仍能看到。
+    //   例：「工作区放行 —— 工作区内直接改，越界需批准（推荐）」→「工作区放行」。
+    const short = (full.split(/\s*——\s*/)[0] || full)
+      .replace(/[（(][^）)]*[）)]\s*$/, "").trim() || full;
+    b.textContent = short;
+    b.title = full;
+    b.setAttribute("aria-pressed", o.selected ? "true" : "false");
+    b.onclick = () => {
+      if (sel.value !== o.value) sel.value = o.value;
+      box.querySelectorAll(".seg-btn").forEach((x) => {
+        const on = x === b;
+        x.classList.toggle("active", on);
+        x.setAttribute("aria-pressed", on ? "true" : "false");
+      });
+      // 派发 change，让既有的 onchange（应用主题、切权限…）原样生效
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    box.appendChild(b);
+  });
+  sel.classList.add("seg-src");
+  // 紧跟原 select 之后，位置与原来一致（父容器是 .field / .sr-ctl 都成立）
+  sel.insertAdjacentElement("afterend", box);
+}
+
+/** 把 root 容器里命中的白名单下拉框统一升级。
+    ⚠️ 必须在**值设好之后**调用，否则 active 会落在错误的选项上。 */
+function upgradeSelects(root) {
+  const host = (typeof root === "string") ? $(root) : root;
+  if (!host || !host.querySelector) return;
+  SEG_SELECTS.forEach((id) => {
+    const el = host.querySelector("#" + id);
+    if (el) upgradeSelect(el);
+  });
+}
 const esc = (s) => String(s == null ? "" : s)
   .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
   .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
@@ -798,10 +872,13 @@ document.addEventListener("DOMContentLoaded", () => {
 /* ---------------- 设置中心的分类定义 ---------------- */
 const PAGES = {};
 /* 右侧设置页的分组；`page` 指明这一项对应哪个已有页面渲染函数
-   分组顺序：偏好设置 / 模型 / 能力扩展 / 运行环境 / 自动化与开发者 / 安全与控制 / 应用
+   分组顺序：偏好设置 / 模型 / 能力扩展 / 运行环境 / 自动化与开发者 / 应用
    ★ 1.4.0 重组：MCP + 插件 + 技能三页合并为「扩展」（整合到一个页面里，
      同一件事不再散在三处）；原「集成与连接」栏位取消（远程并入能力扩展、
-     网络与存储归入运行环境）。 */
+     网络与存储归入运行环境）。
+   ★ 1.5.0：「沙箱和权限」从独立的「安全与控制」栏位移入运行环境末尾 ——
+     它管的就是「本机能改哪些地方、命令怎么跑」，与网络 / 存储同属运行环境；
+     单开一个只有一项的栏位反而让人以为还有别的安全设置。 */
 const SETTINGS_NAV = [
   { group: "偏好设置" },
   { id: "general", label: "通用", icon: "palette", desc: "语言、币种、会话体验" },
@@ -820,11 +897,10 @@ const SETTINGS_NAV = [
   { group: "运行环境" },
   { id: "network", label: "网络", icon: "globe", desc: "代理与连接测试", page: "network" },
   { id: "storage", label: "存储", icon: "folder", desc: "数据占用与存放位置", page: "storage" },
+  { id: "safety", label: "沙箱和权限", icon: "shield", desc: "权限等级、写入范围与命令执行", page: "settings", tab: "safety" },
   { group: "自动化与开发者" },
   { id: "jobs", label: "定时任务", icon: "clock", desc: "cron 定时执行", page: "jobs" },
   { id: "audit", label: "审计日志", icon: "clipboard", desc: "操作留痕，密钥已脱敏", page: "audit" },
-  { group: "安全与控制" },
-  { id: "safety", label: "沙箱和权限", icon: "shield", desc: "权限等级、写入范围与命令执行", page: "settings", tab: "safety" },
   { group: "应用" },
   { id: "account", label: "账号", icon: "users", desc: "登录后查看账户余额", page: "settings", tab: "account" },
   { id: "wxtools", label: "万象实用功能", icon: "sparkles", desc: "签到、模型广场、额度测算等直达入口", page: "settings", tab: "wxtools" },
@@ -1223,7 +1299,7 @@ function renderSettingsSide() {
 
   // ★ 滚动条平时隐形、滚动时才显现。
   //   为什么：侧栏内容比可视区高（分类多），滚动条常驻会在「返回工作区」右侧
-  //   一直挂着一条灰条，看着像多出来一个控件（实测反馈）。
+  //   一直挂着一条灰条，看着像多出来一个控件（实际使用中）。
   //   ★ 只改透明度、不改宽度 —— 宽度一变，滚动时布局会横向抖一下。
   if (!el.dataset.scrollBound) {
     el.dataset.scrollBound = "1";
@@ -1373,6 +1449,8 @@ async function openSetting(id) {
     } else {
       ssHost.innerHTML = `<div class="empty">未找到「${esc(meta.label || want)}」面板。</div>`;
     }
+    // ★ 1.5.0：这一条出口原先漏了搬运，按钮会留在顶栏（与 最小化/关闭 挤成一行）。
+    mountTopActions(body);
     return;
   }
   // 非 settings 页（技能 / MCP / 插件 / 子智能体等）：搬**整页容器**过来。
@@ -1388,6 +1466,8 @@ async function openSetting(id) {
   ssHost._movedPane = host;
   ssHost._movedHome = home;
   ssHost._movedKids = null;
+  // ★ 1.5.0：同上，这条出口原先也漏了搬运。
+  mountTopActions(host);
 }
 
 /** 通用设置（左标题右控件」的排布） */
@@ -1549,6 +1629,10 @@ async function renderGeneralSettings(body) {
       catch (e) { toast("打开失败：" + e.message, "err"); }
     };
   } catch (e) {}
+
+  // ★ 1.5.0：多选项下拉升级成按钮组。必须放在**所有值都设好之后**，
+  //   否则高亮会落在 HTML 里那个默认选项上（与真实配置不一致）。
+  upgradeSelects(body);
 }
 
 /* 通用页新增控件的绑定（配色 / 字号 / 字体 / 宽度 / 动画） */
@@ -1617,7 +1701,7 @@ async function saveUiQuiet(ui) {
   try {
     // ★ 必须用 PATCH：/api/config 只接受 GET/PATCH/POST，旧写法发 PUT 会 405。
     //   而这里的 catch 是「忽略错误」—— 结果就是**设置界面里改什么都保存不上**，
-    //   用户看到「改了字号、刷新又变回去」（实测反馈）。不能静默吞，要提示。
+    //   用户看到「改了字号、刷新又变回去」（实际使用中）。不能静默吞，要提示。
     const r = await api("/api/config", { method: "PATCH", body: { ui } });
     return r;
   } catch (e) {
@@ -1747,7 +1831,7 @@ async function renderInfoPanel() {
   // 上下文档位（本轮最后一次调用的 prompt 占模型上限的比例）
   // ★ 上限按「用户设置 / 模型能力 / 默认 1M」照实显示；只有真取不到数值才显示
   //   「未限制」。旧实现把兜底值整体判成未限制，用户看不出自己设的窗口生效没有
-  //   （实测反馈「各模型的上下文用户设置的多少他就显示多少」）。
+  //   （实际使用中「各模型的上下文用户设置的多少他就显示多少」）。
   const limit = S.contextLimit || 0;
   const used = u.prompt_tokens || 0;   // 最后一次调用的输入（真实上下文占用）
   // ★ 「有没有数据」与「数字是多少」分开表达（实测「发你好之后读数停在 0」）：
@@ -2021,7 +2105,7 @@ function renderStatusBar() {
   const hasUsage = prompt > 0;
   // 上下文读数统一走 fmtNum（全站唯一的 K/M 缩写入口）。
   // ★ 旧写法这里另有一个本地 kw 函数做四舍五入，与信息面板的 fmtNum 不一致 ——
-  //   同一屏里会出现「44800」和「44.8K」两种写法（实测反馈「数字看着乱」）。
+  //   同一屏里会出现「44800」和「44.8K」两种写法（实际使用中「数字看着乱」）。
   const pctUsed = S.contextLimit > 0 ? Math.round((prompt / S.contextLimit) * 100) : 0;
   // 未设置上限（无限上下文）时不显示百分比，只显示绝对值
   const ctxText = S.contextLimit > 0
@@ -2219,7 +2303,7 @@ function downloadText(name, text, type) {
 
 /* 页面级动作按钮。
    ★★★ 1.4.0：不再渲染在顶栏 —— 顶栏那一行与最小化/关闭挤在一起，既难被注意到
-     又割裂（实测反馈）。这里只**构建**，由 mountTopActions() 在**页面渲染之后**
+     又割裂（实际使用中）。这里只**构建**，由 mountTopActions() 在**页面渲染之后**
      搬到内容顶部（先挂会被各页的 el.innerHTML 冲掉）。
    ★ 纯「刷新」按钮一律删掉：进入页面本来就会重新拉数据，摆着只是占地方。
    ★ 页面内**已有**同类按钮的不再重复（如远程页自带「添加主机」）。 */
@@ -2743,7 +2827,7 @@ function renderWsLock(st) {
   //   为什么不再提示「别人正在写、我还没轮到」（旧写法的 busyOther 分支）：
   //   写租约已改为**按需获取** —— 别人在写并不影响我继续提问、继续问答，
   //   此时弹一条「本工作区正被占用、消息会排队」只会让用户以为「一发消息
-  //   就要排队」（实测反馈的正是这个误解）。真正需要他等的只有 waiting。
+  //   就要排队」（实际使用中的正是这个误解）。真正需要他等的只有 waiting。
   if (!waiting) { box.hidden = true; box.innerHTML = ""; return; }
   const who = esc((st && st.busy_by_label) || "另一个对话");
   const txt = `本工作区正由 <b>${who}</b> 使用，要写文件得等它跑完 —— `
@@ -2881,7 +2965,7 @@ function openFirstRunWizard() {
 
     mask.innerHTML = `<div class="modal" style="max-width:520px">
       <h3>权限等级</h3>
-      <div class="sec-desc">控制它能自己改哪些地方。</div>
+      <div class="sec-desc">设定 AI 可自行改动的范围。</div>
       <div style="margin:12px 0">
         ${[["deny", "只读", "可以读取和查看，任何写操作都被拒绝"],
            ["ask", "询问", "每次写操作执行前都问你一次"],
@@ -3276,8 +3360,10 @@ function renderReceipt(data, afterWrap) {
   if (err) { verdict = "未完成（出错）"; vcls = "err"; }
   else if (gaps.length) { verdict = "未完成"; vcls = "warn"; }
   else if (verifies.length) { verdict = "已完成 · 已自检"; vcls = "ok"; }
+  const showDiff = !(S.boot && S.boot.ui && S.boot.ui.diff_review === false);
   const fileRows = files.slice(0, 12).map((f) =>
     `<div class="rc-row"><span class="rc-path" title="${esc(f)}">${esc(f)}</span>
+       ${showDiff ? `<button class="rc-btn" data-rc-diff="${esc(f)}">对比</button>` : ""}
        <button class="rc-btn" data-rc-open="${esc(f)}">打开位置</button></div>`).join("");
   const vRows = verifies.slice(0, 8).map((c) =>
     `<div class="rc-row"><span class="rc-cmd" title="${esc(c)}">${esc(c)}</span></div>`).join("");
@@ -3306,6 +3392,23 @@ function renderReceipt(data, afterWrap) {
       try { await navigator.clipboard.writeText(p); toast("网页版无法打开文件夹，路径已复制", ""); }
       catch (e) { toast(p, ""); }
     }
+  });
+  // ★ 1.5.0：「改文件时显示前后对比」开关接到真实功能上。
+  //   此前这个开关只存进配置、从不被读 —— 关了也照样没有入口、开着也没有。
+  $$("[data-rc-diff]", wrap).forEach((b) => b.onclick = async () => {
+    const p = b.dataset.rcDiff;
+    b.disabled = true;
+    try {
+      const r = await api("/api/file-diff?path=" + encodeURIComponent(p));
+      if (!r.diff) { toast(r.note || "没有可对比的改动记录", ""); return; }
+      modal("改动对比", `<div class="help" style="margin-bottom:8px">
+        对比 <b>${esc(r.backup || "")}</b> → <b>${esc(r.path || "")}</b></div>
+        <pre class="mono" style="max-height:56vh;overflow:auto;white-space:pre;
+          font-size:12px;line-height:1.5;padding:10px;background:var(--bg);
+          border:1px solid var(--border);border-radius:9px">${esc(r.diff)}</pre>`,
+        '<button class="btn" data-close>关闭</button>');
+    } catch (e) { toast(e.message, "err"); }
+    b.disabled = false;
   });
   scrollDown();
 }
@@ -3501,7 +3604,7 @@ async function send(opts) {
       const rb = streamContext.reasoningBox;
       // ★ 只在「这段思考尚未结束」时刷新。rtStopped 由 done 事件（一段输出结束）
       //   与 text 事件（已开始输出正文）置位 —— 否则正文都在打字了、思考时长还在
-      //   往上跑，用户会觉得计时是错的（实测反馈）。
+      //   往上跑，用户会觉得计时是错的（实际使用中）。
       if (rb && rb.isConnected && streamContext.rt0 && !streamContext.rtStopped) {
         const dEl = rb.querySelector(".rdur");
         if (dEl) dEl.textContent = fmtDur((Date.now() - streamContext.rt0) / 1000);
@@ -3940,7 +4043,7 @@ function handleEvent(ev, c) {
   switch (ev.type) {
     case "text": {
       // ★ 已开始输出正文 → 这段思考结束，计时停表（不然正文都在打字了，
-      //   上面的「思考 3.2s」还在往上跳 —— 实测反馈）。
+      //   上面的「思考 3.2s」还在往上跳 —— 实际使用中）。
       markReasoningDone(c);
       // ★ 记下「本轮已出现过助手正文」：收尾兜底据此判断要不要从会话记录补写。
       //   只要流式期间写过正文，就绝不补 —— 否则同一段文字会在同一屏出现两次
@@ -4310,7 +4413,7 @@ function handleEvent(ev, c) {
       //   旧写法只在 c.assist 非空时回刷，而工具调用（tool.start）会把 c.assist
       //   置空并封存文字气泡 —— 如果模型最后一段是工具调用、之后不再产生 text 事件，
       //   交付文字就没有宿主可写，界面上直接消失（重启后从库里读才能看到）。
-      //   实测反馈的正是这个现象。
+      //   实际使用中的正是这个现象。
       //
       //   ★ 顺位（实测「最终文字跑到最上面 / 掉到工具卡后面，重启才回下面」）：
       //   旧写法直接 addMessage(...) —— 那是无条件 append 到对话**最末尾**，
@@ -4431,7 +4534,10 @@ function handleEvent(ev, c) {
     }
     case "notify": {
       toast(`${d.title || ""}：${d.message || ""}`, "");
-      if (window.Notification && Notification.permission === "granted") {
+      // ★ 1.5.0：桌面通知受「外观 → 界面元素 → 桌面通知」开关控制。
+      //   此前这个开关只存进配置、从不被读 —— 关掉它通知照弹。
+      const _allowNotify = !(S.boot && S.boot.ui && S.boot.ui.desktop_notifications === false);
+      if (_allowNotify && window.Notification && Notification.permission === "granted") {
         try { new Notification(d.title || "Fengcode", { body: d.message || "" }); } catch (e) {}
       }
       break;
@@ -4470,7 +4576,7 @@ function showAsk(a) {
     ${a.context ? `<div class="ask-ctx">${esc(a.context)}</div>` : ""}
     ${opts.length ? `<div class="ask-opts" data-multi="${multi ? "1" : ""}">${optHtml}</div>` : ""}
     <div class="ask-free">
-      <input class="ask-input" id="askin-${a.id}" placeholder="${opts.length ? "可点上面的选项，也可以在这里补充或直接写你的答复…" : "输入你的答复…"}">
+      <input class="ask-input" id="askin-${a.id}" placeholder="${opts.length ? "或直接输入你的答复…" : "输入你的答复…"}">
     </div>
     <div class="ask-actions">
       <button class="ask-skip" data-ask-skip type="button" title="跳过这次提问，让 AI 自己拿主意继续做">不回答，你自己决定</button>
@@ -4499,7 +4605,7 @@ function showAsk(a) {
   };
 
   // ★ 选项一律「先选中、再提交」（单选也一样）。
-  //   旧写法单选时点一下就直接发出去 —— 用户想「选完再补充两句」做不到，手一抖就发了（实测反馈）。
+  //   旧写法单选时点一下就直接发出去 —— 用户想「选完再补充两句」做不到，手一抖就发了（实际使用中）。
   //   现在：点选项只切换选中态，答复在点「提交」时才发；输入框里的补充会与选中的选项一起提交。
   const chosen = new Set();
   const inpEl = $("#askin-" + a.id);
@@ -4698,7 +4804,7 @@ async function refreshFooter() {
 }
 /* 换模型后的收尾：★ 必须重算上下文上限 —— 不同模型的窗口差别巨大
    （1M vs 128K），旧写法只改 S.model 不重算，右侧栏就一直显示**上一个模型**
-   的窗口（实测反馈「切换模型后上下文还是之前那个」）。 */
+   的窗口（实际使用中「切换模型后上下文还是之前那个」）。 */
 function onModelPicked() {
   applyContextLimit(S.boot);
   // ★ 换模型时占用读数也要跟着刷新（实测「换模型后显示的是新模型的窗口，
@@ -5215,7 +5321,7 @@ PAGES.memory = async () => {
           <input type="number" id="ms-minscore" step="0.01" min="0" max="1" value="${mem.recall_min_score != null ? mem.recall_min_score : 0.22}"></div>
       </div>
       <div class="grid c2" style="margin-top:12px">
-        <div class="field"><label>每条记忆最多送多少字<span class="hint">太短会把经验截成半条</span></label>
+        <div class="field"><label>每条记忆最多送多少字<span class="hint">过短会截断内容</span></label>
           <input type="number" id="ms-bodychars" min="200" max="8000" step="100" value="${mem.recall_body_chars != null ? mem.recall_body_chars : 1200}"></div>
         <div class="field"><label>记忆整段 token 预算<span class="hint">放宽单条时这里要一起加</span></label>
           <input type="number" id="ms-recallbudget" min="500" max="20000" step="100" value="${mem.recall_budget_tokens != null ? mem.recall_budget_tokens : 3200}"></div>
@@ -5256,7 +5362,7 @@ PAGES.memory = async () => {
     if (!items.length) {
       listEl.innerHTML = `<div class="empty">${archivedView
         ? "没有归档的记忆。归档用于把过时但仍有保留价值的内容收起来。"
-        : "还没有记忆。当你告诉我偏好或重要背景时，我会记下来。"}</div>`;
+        : "还没有记忆。说出「记住：……」就会记下来。"}</div>`;
       return;
     }
     listEl.innerHTML = items.map((m) => `
@@ -5323,7 +5429,7 @@ PAGES.memory = async () => {
               <button class="btn sm ghost" data-instr-view="${esc(f.path)}"${f.exists ? "" : " disabled"}>查看</button>
               <button class="btn sm ghost" data-instr-edit="${esc(f.path)}">编辑</button>
             </div>
-          </div>`).join("") : `<div class="empty">未发现可用的指令文件位置。</div>`}`;
+          </div>`).join("") : `<div class="empty">没有找到可用的指令文件</div>`}`;
 
       $$("[data-instr-view]", listEl).forEach((b) => b.onclick = async () => {
         try {
@@ -5499,6 +5605,136 @@ function paintRulesGlobal() {
   }
 }
 
+/* ---- 沙箱页：可写目录列表（1.5.0） ------------------------------------
+   ★ 为什么改用列表而不是一个多行文本框：旧写法让用户手敲路径，既没法浏览
+     选择，也看不出哪条真的生效了 —— 实际使用中就是「让在白名单添加，
+     我咋没找到白名单」。列表逐条显示、逐条可删，点一下还能选文件夹。
+   ★ 与规则列表同一个坑：设置中心搬的是**真实节点**，同一 id 可能同时存在
+     多份容器，这里必须渲染所有匹配的容器，否则用户看的是旧内容。 */
+
+/** 把 $WORKSPACE / $HOME / $TMP 换成真实路径（只用于显示，不写回配置）。 */
+function expandPathVars(raw) {
+  const V = window.__pathVars || {};
+  let p = String(raw == null ? "" : raw);
+  if (p.startsWith("$WORKSPACE")) p = (V.workspace || "") + p.slice(10);
+  else if (p.startsWith("$HOME")) p = (V.home || "") + p.slice(5);
+  else if (p.startsWith("$TMP")) p = (V.tmp || "") + p.slice(4);
+  return p.replace(/[\\/]+$/, "");
+}
+
+/** 渲染可写目录列表。 */
+function paintWritePaths() {
+  const list = window.__fengcodeWrite || [];
+  const html = list.length
+    ? list.map((raw, i) => {
+      const real = expandPathVars(raw);
+      const isVar = String(raw).startsWith("$");
+      return `<div class="path-row">
+        <span class="p-ico">${icon("folder", 14)}</span>
+        <span class="p-path" title="${esc(real || raw)}">${esc(real || raw)}</span>
+        ${isVar ? `<span class="p-tag tag" title="占位符，随工作区变化">${esc(raw)}</span>` : ""}
+        <span class="p-del" data-write-del="${i}" title="移除">${icon("close", 12)}</span>
+      </div>`;
+    }).join("")
+    : `<div class="help empty">还没有额外目录。工作区本身始终可写。</div>`;
+  $$("#p-write-list").forEach((b) => { b.innerHTML = html; });
+}
+
+/** 取一次路径基准值（工作区 / 家目录 / 临时目录），供上面展开占位符。 */
+async function loadPathVars() {
+  try {
+    const d = await api("/api/paths");
+    window.__pathVars = {
+      workspace: d.workspace || "", home: d.home || "", tmp: d.tmp || "",
+    };
+  } catch (e) { /* 拿不到就只显示原样，不影响主流程 */ }
+}
+
+/** 网页版退回用的目录选择框（桌面端走系统对话框，见 chooseFolder）。 */
+function pickFolderWeb(start) {
+  return new Promise((resolve) => {
+    let cur = start || "";
+    const body = modal("选择文件夹", `      <div class="dirpick">
+        <div class="dp-crumbs">
+          <span class="dp-up" id="dp-up">↑ 上一级</span>
+          <span class="dp-cur" id="dp-cur">正在读取…</span>
+        </div>
+        <div class="dp-roots" id="dp-roots"></div>
+        <div class="dp-list" id="dp-list"></div>
+      </div>`,
+      `<button class="btn" data-close>取消</button>
+       <button class="btn primary" id="dp-ok">就用这个文件夹</button>`);
+    if (!body) { resolve(""); return; }
+    let done = false;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      closeModal();
+      resolve(v || "");
+    };
+    $$("#modal [data-close]").forEach((b) => b.onclick = () => finish(""));
+    const paint = async () => {
+      const curEl = $("#dp-cur", body), listEl = $("#dp-list", body);
+      let d;
+      try {
+        // ★ cur 为空时先取一次基准目录（工作区）。
+        //   为什么必须补这一步：`/api/paths` 在有 path 参数时列目录、没有时
+        //   返回的是「可写/可读范围报告」，两者结构不同 —— 直接拿空路径去问，
+        //   拿到的是报告，`d.dirs` 是 undefined，弹窗里就是一片空白。
+        if (!cur) {
+          try {
+            const base = await api("/api/paths");
+            cur = base.workspace || base.home || "";
+          } catch (e) { /* 取不到就让后端报错，下面会显示原因 */ }
+        }
+        d = await api("/api/paths?path=" + encodeURIComponent(cur || ""));
+      } catch (e) {
+        if (listEl) listEl.innerHTML = `<div class="help" style="padding:12px">无法读取：${esc(e.message)}</div>`;
+        return;
+      }
+      cur = d.path || cur;
+      if (curEl) { curEl.textContent = cur; curEl.title = cur; }
+      // 盘符 / 根目录快捷入口
+      const rootsEl = $("#dp-roots", body);
+      if (rootsEl && !rootsEl.dataset.done) {
+        rootsEl.dataset.done = "1";
+        rootsEl.innerHTML = (d.roots || []).map((r) =>
+          `<button class="btn sm ghost" data-root="${esc(r)}">${esc(r)}</button>`).join("");
+        $$("[data-root]", rootsEl).forEach((b) => b.onclick = () => { cur = b.dataset.root; paint(); });
+      }
+      const up = $("#dp-up", body);
+      if (up) up.onclick = () => {
+        if (!d.parent) return toast("已经是根目录", "");
+        cur = d.parent; paint();
+      };
+      if (listEl) {
+        const dirs = d.dirs || [];
+        listEl.innerHTML = dirs.length
+          ? dirs.map((x) => `<div class="dp-row" data-enter="${esc(x.path)}">
+              <span class="p-ico">${icon("folder", 14)}</span>
+              <span class="dp-name">${esc(x.name)}</span></div>`).join("")
+          : `<div class="help" style="padding:12px">这个文件夹里没有子文件夹</div>`;
+        $$("[data-enter]", listEl).forEach((r) => r.onclick = () => { cur = r.dataset.enter; paint(); });
+      }
+    };
+    const ok = $("#dp-ok");
+    if (ok) ok.onclick = () => finish(cur);
+    paint();
+  });
+}
+
+/** 选一个文件夹：桌面端弹系统对话框（最顺手），网页版退回自绘选择框。 */
+async function chooseFolder(start) {
+  if (window.fengcode && typeof window.fengcode.pickFolder === "function") {
+    try {
+      const p = await window.fengcode.pickFolder(start || "");
+      if (p) return p;
+      return "";   // 用户在系统对话框里点了取消，不再弹第二层
+    } catch (e) { /* 桌面端不可用则退回自绘 */ }
+  }
+  return await pickFolderWeb(start || "");
+}
+
 /** 记忆条目列表 + 统计（记忆面板用）。
  *  注意设置中心是搬「真实节点」，所以同一 id 可能同时存在于原页与设置中心；
  *  这里填充**所有匹配的容器**，避免有一处永远停在「正在读取…」。 */
@@ -5520,7 +5756,7 @@ function topicTag(m) {
 /** 记忆条目正文：**一行摘要 + 可展开全文**。
     ★ 为什么默认只显示一行：以前把正文预览直接铺开，长记忆一条占大半屏，
       翻找和对比都困难。
-    ★★ 为什么「展开全文」不能夹在正文中间（实测反馈：「展开全文四个字直接插在了
+    ★★ 为什么「展开全文」不能夹在正文中间（实际使用中：「展开全文四个字直接插在了
       正文之间」）：旧实现把**预览**放在 `<details>` 外面、把**全文**放在里面 ——
       展开后就是「预览 → 展开全文 → 完整正文」三段，读起来像正文被截断了一次。
       现在外面只留一行摘要，全文整个放进 `<details>`，展开后不会与摘要重复。
@@ -5811,7 +6047,7 @@ PAGES.skills = async (host) => {  const el = extHost("skills", host, "#page-skil
   const items = d.skills || [];
   const srcMap = { builtin: "内置", user: "我自己建的" };
   el.innerHTML = `<div class="card">
-    <h3>技能库（${items.length}）<span class="hint">技能是「怎么做事」的说明书，任务匹配时会自动照着做</span></h3>
+    <h3>技能库（${items.length}）<span class="hint">任务匹配时自动应用的做法说明</span></h3>
     <div class="row" style="margin-bottom:12px">
       <button class="btn primary" id="sk-new">新建技能</button>
       <button class="btn" id="sk-rescan">重新扫描</button>
@@ -6127,13 +6363,13 @@ PAGES.plugins = async (host) => {
       <div class="field" style="margin-top:10px"><label>它是干什么的<span class="hint">给自己看的说明</span></label>
         <input type="text" id="np-desc" placeholder="例如：查天气、发通知"></div>
       <div class="help" style="margin-top:10px">
-        会建一个插件文件夹，里面有 manifest.yaml 和 plugin.py，改 plugin.py 就能加功能。
+        会建一个插件文件夹，改其中的代码即可加功能。
       </div>`,
       `<button class="btn" data-close>取消</button>
        <button class="btn primary" id="np-ok">创建</button>`);
     $("#np-ok").onclick = async () => {
       const name = $("#np-name").value.trim();
-      if (!name) return toast("填个名字", "err");
+      if (!name) return toast("请填写名称", "err");
       try {
         const r = await api("/api/plugins", { method: "POST", body: {
           action: "create", name, display_name: name,
@@ -6204,8 +6440,7 @@ PAGES.extensions = async () => {
   el.innerHTML = `
     <div class="card"><h3>扩展<span class="hint">技能、插件与 MCP 服务</span></h3>
       <div class="help">
-        技能、插件与 MCP 服务，改完都要重新加载才会在当前会话生效。
-      </div>
+              </div>
       <div class="row" style="margin-top:10px">
         <button class="btn" id="ext-reload">重新加载全部</button>
         <span class="hint">下一轮对话开始使用新配置</span>
@@ -6238,7 +6473,7 @@ PAGES.workflows = async () => {
   const el = $("#page-workflows");
   const d = await api("/api/workflows");
   const list = d.workflows || [];
-  el.innerHTML = `<div class="card"><h3>工作流（${list.length}）<span class="hint">把多步任务编成 DAG，同层并行执行</span></h3>
+  el.innerHTML = `<div class="card"><h3>工作流（${list.length}）<span class="hint">把多步任务编排成流程，同层并行执行</span></h3>
     ${list.length ? `<table><thead><tr><th style="width:200px">名称</th><th>说明</th><th style="width:80px">步骤</th>
       <th style="width:160px">更新时间</th><th style="width:180px"></th></tr></thead><tbody>
       ${list.map((w) => `<tr>
@@ -6333,7 +6568,7 @@ PAGES.jobs = async () => {
           <button class="btn sm ghost" data-edit="${esc(j.id)}">编辑</button>
           <button class="btn sm ghost danger" data-del="${esc(j.id)}">删除</button>
         </td></tr>`).join("")}</tbody></table>`
-      : `<div class="empty"><div class="big">${icon("clock", 34)}</div>还没有定时任务。到点自动跑的那种。</div>`}
+      : `<div class="empty"><div class="big">${icon("clock", 34)}</div>还没有定时任务。</div>`}
     </div>`;
   $$("[data-run]").forEach((b) => b.onclick = async () => {
     b.textContent = "运行中…"; b.disabled = true;
@@ -6533,7 +6768,7 @@ function remoteEdit() {
       <div class="field"><label>默认目录</label><input type="text" id="r-ws" value="~"></div>
     </div>
     <div class="field"><label>密码</label><input type="password" id="r-pass">
-      <div class="help">会明文存在本地 config.toml；也可以只填环境变量名，运行时从环境解析</div></div>
+      <div class="help">将明文保存在本机配置；也可只填环境变量名，运行时从环境读取</div></div>
     <div class="field"><label>或密码环境变量名</label><input type="text" id="r-passenv" placeholder="如 MY_SSH_PASSWORD"></div>
     <div class="field"><label>或私钥文件</label><input type="text" id="r-key" placeholder="C:\\Users\\...\\.ssh\\id_rsa"></div>`,
     `<button class="btn" data-close>取消</button><button class="btn primary" id="r-save">添加</button>`);
@@ -6707,8 +6942,12 @@ PAGES.network = async () => {
 
   const desc = $("#net-mode-desc", el);
   const manual = $("#net-manual", el);
+  const curSeg = () => {
+    const a = $(".seg-btn.active", $("#net-mode", el));
+    return a ? a.dataset.mode : mode;
+  };
   const paint = () => {
-    const cur = ($(".seg-btn.active", el) || {}).dataset ? $(".seg-btn.active", el).dataset.mode : mode;
+    const cur = curSeg();
     if (desc) desc.textContent = cur === "system"
       ? "使用这台电脑上已配置的代理环境变量；没有设置时即直连。"
       : cur === "manual"
@@ -6716,14 +6955,16 @@ PAGES.network = async () => {
         : "忽略系统里的代理设置，强制直连。";
     if (manual) manual.style.display = cur === "manual" ? "" : "none";
   };
-  $$(".seg-btn", el).forEach((b) => b.onclick = () => {
-    $$(".seg-btn", el).forEach((x) => x.classList.toggle("active", x === b));
+  // ★ 1.5.0：必须限定在 #net-mode 里 —— 本页下面还有「协议」的分段按钮组，
+  //   不限定范围会把两个组的高亮一起切掉（点协议会顺带取消出网方式的高亮）。
+  $$(".seg-btn", $("#net-mode", el)).forEach((b) => b.onclick = () => {
+    $$(".seg-btn", $("#net-mode", el)).forEach((x) => x.classList.toggle("active", x === b));
     paint();
   });
   paint();
 
   const curMode = () => {
-    const a = $(".seg-btn.active", el);
+    const a = $(".seg-btn.active", $("#net-mode", el));
     return a ? a.dataset.mode : mode;
   };
   const result = $("#net-result", el);
@@ -6767,6 +7008,10 @@ PAGES.network = async () => {
     } catch (e) { show(`<div class="perm-warn"><div class="pw-item">测试失败：${esc(e.message)}</div></div>`); }
     test.disabled = false; test.textContent = "测试连接";
   };
+
+  // ★ 1.5.0：协议下拉升级成按钮组（4 档）。与上面的出网方式按钮组互不干扰 ——
+  //   行为上限定在各自的容器里。
+  upgradeSelects(el);
 };
 
 /* ==========================================================================
@@ -6905,7 +7150,7 @@ PAGES.stats = async () => {
           <span class="hm-cell lv3"></span><span class="hm-cell lv4"></span><span>多</span>
           <span class="spacer"></span><span>合计 ${(hm.total_calls || 0)} 次调用</span></div>
       </div>
-      <div class="card"><h3>按来源（近 30 天）<span class="hint">这些钱花在哪了</span></h3>
+      <div class="card"><h3>按来源（近 30 天）<span class="hint">按来源的用量分布</span></h3>
         ${kinds.length ? kinds.map((k) => `
           <div style="margin-bottom:9px">
             <div class="row" style="font-size:12px;margin-bottom:3px">
@@ -7101,7 +7346,7 @@ PAGES.settings = async () => {
         <div id="m-list" class="help">正在读取…</div>
       </div>
 
-      <!-- ★ 记忆的细分设置默认收起（实测反馈：一屏塞满「召回最低分」「遗忘半衰期」
+      <!-- ★ 记忆的细分设置默认收起（实际使用中：一屏塞满「召回最低分」「遗忘半衰期」
            这类没设过也不懂含义的旋钮，反而看不到「它到底记住了什么」——而那才是
            这一页真正要看的东西）。默认值本来就够用，需要微调的人再展开即可。 -->
       <details class="prov-more" style="margin-top:0">
@@ -7132,10 +7377,10 @@ PAGES.settings = async () => {
           </div>
           <label class="switch" style="margin-top:8px"><input type="checkbox" id="m-vec"${mem.use_vector !== false ? " checked" : ""}>
             向量检索</label>
-          <div class="help" style="margin-top:4px">按「意思相近」找，而不是「字面相同」；密钥不可用时自动降级为本地关键词检索。</div>
+          <div class="help" style="margin-top:4px">按语义相近检索，而不是字面相同。</div>
           <div class="field" style="margin-top:10px"><label>遗忘半衰期<span class="hint">天数，越久越不容易被淡忘</span></label>
             <input type="number" id="m-decay" min="1" max="3650" value="${mem.decay_half_life_days != null ? mem.decay_half_life_days : 45}"></div>
-          <div class="help" style="margin-top:4px">旧记忆会随时间推移逐渐降权，超过这个天数后权重减半。</div>
+          <div class="help" style="margin-top:4px">记忆越旧越少被选中，超过这个天数后权重减半。</div>
         </div>
       </details>
     </div>
@@ -7154,21 +7399,36 @@ PAGES.settings = async () => {
         </div>
         <label class="switch" style="margin-top:10px"><input type="checkbox" id="p-audit"${perms.audit_enabled !== false ? " checked" : ""}>
           记录审计日志</label>
-        <label class="switch" style="margin-top:8px"><input type="checkbox" id="p-protect"${(cfg.tools || {}).protect_stale_files !== false ? " checked" : ""}>
+        <div class="help" style="margin-top:3px">每次工具调用与审批决定都记在本机，可在「审计日志」页按时间翻查。</div>
+      </div>
+      <div class="card"><h3>沙箱<span class="hint">批准之后能碰的范围</span></h3>
+        <div class="approval-note">命令在本机直接执行，没有系统级隔离。哪些操作需要你批准，由上面的「权限等级」决定。</div>
+        <div class="field">
+          <label>可写范围<span class="hint">只有这些目录里的文件改得动</span></label>
+          <div class="help" style="margin-bottom:7px">
+            工作区始终可写。这条只约束文件工具，不限制 Shell。支持
+            $WORKSPACE（当前工作区）、$HOME（用户目录）、$TMP（临时目录），也可以直接选一个文件夹。
+          </div>
+          <div class="path-list" id="p-write-list"></div>
+          <div class="row">
+            <button class="btn sm" id="p-add-dir">选文件夹…</button>
+            <input class="mono" id="p-add-input" placeholder="或直接输入路径" style="flex:1" />
+            <button class="btn sm" id="p-add-manual">添加</button>
+          </div>
+        </div>
+        <label class="switch" style="margin-top:14px"><input type="checkbox" id="p-protect"${(cfg.tools || {}).protect_stale_files !== false ? " checked" : ""}>
           保护被改动的文件</label>
-        <div class="help" style="margin-top:3px">模型读过或写过的文件若之后被你或其他程序改过，整文件覆盖会被拒绝，要求重新读取。</div>
+        <div class="help" style="margin-top:3px">文件被外部改动后，整文件覆盖会被拒绝并要求重新读取。</div>
+
+        <details class="prov-more" style="margin-top:12px">
+          <summary>读取范围与禁止访问（一般不用改）</summary>
+          <label style="font-size:12.5px;color:var(--text-dim);display:block;margin-top:10px">允许读取</label>
+          <textarea id="p-read" class="mono" rows="3">${esc((perms.read_paths || []).join("\n"))}</textarea>
+          <label style="font-size:12.5px;color:var(--text-dim);display:block;margin-top:9px">禁止访问（通配符）</label>
+          <textarea id="p-deny" class="mono" rows="3">${esc((perms.deny_patterns || []).join("\n"))}</textarea>
+        </details>
       </div>
-      <div class="card"><h3>写路径白名单<span class="hint">每行一个</span></h3>
-        <div class="help" style="margin-bottom:7px">支持 $WORKSPACE（当前工作区）、$HOME（用户目录）、$TMP（临时目录）</div>
-        <label style="font-size:12.5px;color:var(--text-dim)">允许写入</label>
-        <textarea id="p-write" class="mono" rows="3">${esc((perms.write_paths || []).join("\n"))}</textarea>
-        <label style="font-size:12.5px;color:var(--text-dim);display:block;margin-top:9px">允许读取</label>
-        <textarea id="p-read" class="mono" rows="3">${esc((perms.read_paths || []).join("\n"))}</textarea>
-        <label style="font-size:12.5px;color:var(--text-dim);display:block;margin-top:9px">禁止访问（通配符）</label>
-        <textarea id="p-deny" class="mono" rows="3">${esc((perms.deny_patterns || []).join("\n"))}</textarea>
-      </div>
-      <div class="card"><h3>执行命令的限制<span class="hint">Shell 与运行环境</span></h3>
-        <div class="approval-note">命令在本机直接执行：有超时、输出截断与进程树终止，但没有系统级隔离（本机 Windows 未启用操作系统沙箱）。上面「权限等级」决定哪些命令需要你批准。</div>
+      <div class="card"><h3>命令执行</h3>
         <div class="field" style="margin-bottom:12px">
           <label>Shell 解释器</label>
           <select id="sb-shell">
@@ -7191,24 +7451,21 @@ PAGES.settings = async () => {
         </div>
         <label class="switch" style="margin-top:9px"><input type="checkbox" id="s-net"${(cfg.sandbox || {}).network !== false ? " checked" : ""}>
           允许它联网</label>
-        <label class="switch" style="margin-top:8px"><input type="checkbox" id="s-browser"${(cfg.tools || {}).browser !== false ? " checked" : ""}>
-          启用内置浏览器</label>
-        <div class="help" style="margin-top:3px">关掉后模型看不到网页工具，也就打不开网页；重新打开需重载运行时。</div>
+        <div class="help" style="margin-top:3px">关掉后命令里发不出网络请求（抓网页、装依赖都会失败）。</div>
       </div>
-      <div class="card"><h3>文件工具写入范围<span class="hint">仅约束文件工具，不限制 Shell</span></h3>
-        <div class="field">
-          <label>当前允许写入</label>
-          <div class="mono" style="font-size:11.5px;color:var(--text-dim);padding:6px 9px;background:var(--bg);border-radius:7px;border:1px solid var(--border)">
-            ${esc((cfg.agent || {}).workspace_override || "（使用当前工作区）")}
-          </div>
-          <div class="help">工作区本身始终可写；额外目录在下面的白名单里加。</div>
+      <div class="card"><h3>内置浏览器</h3>
+        <div class="help" style="margin-bottom:9px">
+          模型用来打开网页、读取内容与点击操作的工具。浏览器在第一次用到时才启动。
         </div>
+        <label class="switch"><input type="checkbox" id="s-browser"${(cfg.tools || {}).browser !== false ? " checked" : ""}>
+          启用内置浏览器</label>
+        <div class="help" style="margin-top:3px">关掉后这些工具不会出现在工具列表里，模型也就打不开网页；改动需重载运行时生效。</div>
       </div>
       <div class="card"><h3>细粒度规则</h3>
         <div class="help" style="margin-bottom:9px">
-          格式：<code>tool:工具名</code>、<code>cmd:命令前缀</code>（如 <code>cmd:git *</code>）、
+          写法：<code>tool:工具名</code>、<code>cmd:命令前缀</code>（如 <code>cmd:git *</code>）、
           <code>path:路径通配</code>（如 <code>path:**/.ssh/*</code>）、<code>risk:关键词</code>。
-          匹配到的操作按对应列处理。
+          命中后按对应列处理。
         </div>
         <div class="grid c3">
           <div class="field">
@@ -7371,7 +7628,7 @@ PAGES.settings = async () => {
     const cardHtml = (p) => {
       const models = (p.models || []).length ? p.models : (p.default ? [p.default] : []);
       return `
-      <div style="border:1px solid var(--border);border-radius:9px;padding:11px 13px;margin-bottom:9px">
+      <div data-pcard="${esc(p.name)}" style="border:1px solid var(--border);border-radius:9px;padding:11px 13px;margin-bottom:9px">
         <div class="row" style="margin-bottom:6px">
           <b>${esc(p.display_name || p.name)}</b>
           <span class="tag">${esc(p.kind)}</span>
@@ -7387,8 +7644,11 @@ PAGES.settings = async () => {
         ${models.length
           ? models.map((m) => modelRowHtml(p, m)).join("")
           : '<div class="help">还没有模型。点「测试并获取模型」拉取，或在「编辑」里手填。</div>'}
-        <div class="help" style="margin-top:8px">
-          留空即不限制（交给上游）；<b>单价填了才会算费用</b>，不填一律记 0。
+        <!-- ★ 1.5.0：勾选改动**不即时生效**，点这里才提交（用户要的「保存按钮」）。
+             为什么改：旧写法勾掉只是把行变灰、模型仍留在列表里，看着像没生效。 -->
+        <div class="row" style="margin-top:10px">
+          <button class="btn sm" data-psave="${esc(p.name)}">保存</button>
+          <span class="help" style="margin:0">取消勾选后点保存，这个模型就会从列表里去掉</span>
         </div>
       </div>`;
     };
@@ -7452,7 +7712,31 @@ PAGES.settings = async () => {
     // ---- 逐模型设置：勾选启用 + 上下文窗口 / 输出上限 / 支持图片 ----
     // ★★ 用**模块级的共用保存与绑定**（与账号页同一套）：两处行为一致，
     //    改哪边都一样；也避免「两套实现各自演化」这种老毛病。
-    bindModelRows($("#prov-list"), saveModelOverride);
+    // ★ 1.5.0：本页勾选用延迟提交（data-defer），由每张卡片下面的「保存」按钮落盘。
+    const provList = $("#prov-list");
+    if (provList) provList.dataset.defer = "1";
+    bindModelRows(provList, saveModelOverride);
+
+    // 每个供应商的「保存」：把当前勾上的模型作为一个整体提交。
+    $$("[data-psave]").forEach((b) => b.onclick = async () => {
+      const pname = b.dataset.psave;
+      const card = b.closest("[data-pcard]") || document;
+      const keep = $$("[data-mon]", card)
+        .filter((el) => el.checked)
+        .map((el) => String(el.dataset.mon || "").split("|")[1])
+        .filter(Boolean);
+      if (!keep.length && !confirm(`「${pname}」一个模型都不留？\n保存后它就没有可用模型了。`)) return;
+      b.disabled = true;
+      try {
+        await api("/api/providers", { method: "POST", body: { action: "set_models", name: pname, models: keep } });
+        toast(`已保存，保留 ${keep.length} 个模型`, "ok");
+        S.boot = await api("/api/bootstrap");
+        syncModelSelect();
+        renderAccountModels();
+        await renderProviders();
+      } catch (e) { toast("保存失败：" + e.message, "err"); }
+      b.disabled = false;
+    });
   };
   window.__renderProviders = renderProviders;
   renderProviders();
@@ -7571,7 +7855,7 @@ PAGES.settings = async () => {
     if (!f) return;
     if (f.size > 6 * 1024 * 1024) return toast("图片太大（请小于 6MB）", "err");
     const rd = new FileReader();
-    rd.onload = () => { applyImageTheme(rd.result); paintGallery(); toast("已应用，记得点「保存设置」", "ok"); };
+    rd.onload = () => { applyImageTheme(rd.result); paintGallery(); toast("已应用，保存后生效", "ok"); };
     rd.readAsDataURL(f);
   };
 
@@ -7635,6 +7919,55 @@ PAGES.settings = async () => {
 
   // ---- 沙箱：探测本机 Shell 环境（对应「运行环境检测」表格）----
   fillSandboxProbe();
+
+  // ---- 沙箱：可写目录列表（1.5.0）----
+  // ★ 用内存数组维护（与上面 RULES 同一套做法）：设置中心搬的是真实节点，
+  //   直接读 DOM 会在「同时存在多份容器」时读到旧值。
+  window.__fengcodeWrite = Array.isArray(perms.write_paths) ? perms.write_paths.slice() : [];
+  paintWritePaths();
+  loadPathVars().then(() => paintWritePaths());
+  if (!window.__writeUIBound) {
+    window.__writeUIBound = true;
+    const addPath = (v) => {
+      const val0 = String(v || "").trim();
+      if (!val0) { toast("请填写路径", "err"); return; }
+      const list = window.__fengcodeWrite || [];
+      if (list.includes(val0)) { toast("这条已经在列表里了", ""); return; }
+      list.push(val0);
+      window.__fengcodeWrite = list;
+      paintWritePaths();
+      toast("已添加，保存后生效", "ok");
+    };
+    document.addEventListener("click", async (e) => {
+      if (e.target.closest("#p-add-dir")) {
+        e.preventDefault();
+        const p = await chooseFolder("");
+        if (p) addPath(p);
+        return;
+      }
+      if (e.target.closest("#p-add-manual")) {
+        e.preventDefault();
+        const inp = document.querySelector("#p-add-input");
+        addPath(inp ? inp.value : "");
+        if (inp) inp.value = "";
+        return;
+      }
+      const del = e.target.closest("[data-write-del]");
+      if (del) {
+        e.preventDefault();
+        const list = window.__fengcodeWrite || [];
+        list.splice(Number(del.dataset.writeDel), 1);
+        window.__fengcodeWrite = list;
+        paintWritePaths();
+      }
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" || !e.target || e.target.id !== "p-add-input") return;
+      e.preventDefault();
+      addPath(e.target.value);
+      e.target.value = "";
+    });
+  }
 
   // ---- 权限细粒度规则：三列（deny / ask / allow），可增删 ----
   // 用内存里的数组维护，保存时一并写进 config.permissions.rules
@@ -7826,7 +8159,11 @@ async function loadRecoveryGlobal() {
       permissions: {
         mode: val("p-mode"),
         audit_enabled: chk("p-audit"),
-        write_paths: lines("#p-write"),
+        // ★ 1.5.0：可写范围改成列表维护（原来是 <textarea id="p-write">）。
+        //   读的是内存数组，读不到容器时**不要**回退成空数组 —— 那会把用户
+        //   已配好的白名单清空（设置中心一次只显示一个分类，别的分类下的
+        //   元素本来就不存在）。
+        write_paths: window.__fengcodeWrite || undefined,
         read_paths: lines("#p-read"),
         deny_patterns: lines("#p-deny"),
         rules,
@@ -7861,7 +8198,7 @@ async function loadRecoveryGlobal() {
         // ★ 字号 / 主题 / 语言在两个页面各有一套控件（通用页 g-*、外观页 u-*）。
         //   旧写法只读外观页的 u-*：在**通用页**改完字号再点保存，因为 u-fontsize
         //   根本不存在 → 读成空 → `|| 17` 兜底把字号**写回默认 17**，用户改的字号
-        //   就这么被覆盖掉了（实测反馈「选择字号没效果」）。
+        //   就这么被覆盖掉了（实际使用中「选择字号没效果」）。
         //   现在两边都读，且读不到时给 undefined，交给 prune 剔除、不覆盖原值。
         theme: val("u-theme") || val("g-theme") || undefined,
         language: val("u-lang") || val("g-lang") || undefined,
@@ -7919,6 +8256,10 @@ async function loadRecoveryGlobal() {
     });
   }
   window.__saveSettingsNow = saveSettingsNow;
+
+  // ★ 1.5.0：多选项下拉升级成按钮组。放在最后 —— 各面板的值都已填好，
+  //   高亮才对得上真实配置。搬进设置中心的节点已带着按钮组，不影响。
+  upgradeSelects(el);
 };
 
 /* ==========================================================================
@@ -7950,10 +8291,10 @@ function modelRowHtml(p, m) {
     <div class="mcfg">
       <div class="mline">
         <span class="mtag">容量</span>
-        <label title="这个模型能装多少上下文，自己填数字；留空=不限制。最小 64000">上下文窗口
+        <label title="留空不限制，最小 64000">上下文窗口
           <input type="number" min="64000" data-mf="context_window" value="${ov.context_window || ""}"
             placeholder="如 1048576"></label>
-        <label title="单次最多能输出多少 token，自己填数字；留空=不限制。最小 32000">输出上限
+        <label title="留空不限制，最小 32000">输出上限
           <input type="number" min="32000" data-mf="max_output_tokens" value="${ov.max_output_tokens || ""}"
             placeholder="如 384000"></label>
         <label class="mvis" title="这个模型能不能读图">
@@ -7962,7 +8303,7 @@ function modelRowHtml(p, m) {
       <!-- ★ 单价：填了才会算费用，留空一律显示 0。 -->
       <div class="mline mprice">
         <span class="mtag">单价</span>
-        <label title="每百万输入 token 多少钱（未命中缓存的部分）">输入
+        <label title="每百万输入 token 单价（不含缓存命中）">输入
           <input type="number" step="0.0001" data-mf="price_input" value="${pr.input != null ? pr.input : ""}"
             placeholder="如 0.35"></label>
         <label title="每百万输出 token 多少钱">输出
@@ -8000,6 +8341,14 @@ function bindModelRows(root, saveFn) {
   };
   scope.querySelectorAll("[data-mon]").forEach((el) => el.onchange = () => {
     const [pn, md] = String(el.dataset.mon || "").split("|");
+    const row = el.closest(".mrow");
+    // 视觉反馈先行：勾掉的行立刻变灰（不管采不采纳）。
+    if (row) row.classList.toggle("off", !el.checked);
+    // ★ 1.5.0：模型服务页里勾选用**延迟提交**（root 上带 data-defer），
+    //   要等用户点那一行下面的「保存」才落盘 —— 实际使用中：勾掉之后
+    //   模型还留在列表里（旧写法只是把它变灰），看着像没生效。
+    //   账号页没有这个按钮，保持即时保存。
+    if (scope.dataset && scope.dataset.defer === "1") return;
     if (pn && md) saveFn(pn, md, { enabled: el.checked });
   });
   scope.querySelectorAll("[data-mf]").forEach((el) => el.onchange = () => {
@@ -8176,7 +8525,7 @@ function renderAccountPane() {
           <input type="password" id="acct-pass" autocomplete="current-password" placeholder="不会保存在本机">
           <button class="btn sm ghost" type="button" id="acct-pass-paste"
             title="从剪贴板粘贴，不走键盘输入">粘贴</button>
-          <label class="switch" title="把密码显示成明文，便于确认到底输进去了什么">
+          <label class="switch" title="显示密码明文">
             <input type="checkbox" id="acct-pass-show">显示</label>
         </div></div>
       <div class="row" style="margin-top:10px">
@@ -8184,7 +8533,7 @@ function renderAccountPane() {
         <span id="acct-msg" style="font-size:12.5px;color:var(--text-dim)"></span>
       </div>
       <div class="help" style="margin-top:8px">
-        密码不落盘，凭证只存服务端。输入法打不出字时可用「粘贴」按钮。
+        密码不保存在本机，凭证只存服务端。输入法异常时可用「粘贴」。
       </div>`;
 
     const btn = $("#acct-login");
@@ -8437,7 +8786,7 @@ async function providerAdd() {
       </div>
       <div class="field"><label>Base URL</label><input type="text" id="pv-curl" placeholder="https://api.example.com/v1"></div>
       <div class="field"><label>API Key</label><input type="password" id="pv-ckey" placeholder="粘贴密钥">
-        <div class="help">只存在本地 config.toml，不会外传</div></div>
+        <div class="help">仅保存在本机，不会外传</div></div>
       <div class="field"><label>模型列表（每行一个）</label>
         <textarea id="pv-cmodels" class="mono" rows="4"></textarea>
         <div class="help">模型名要和服务商文档一致；有些服务需要带前缀（如 qwen/qwen3-max）</div></div>
@@ -8576,7 +8925,7 @@ function providerEdit(p, models) {
     </div>
     <div class="field"><label>Base URL</label><input type="text" id="pr-url" value="${esc(p.base_url)}" placeholder="https://api.example.com/v1"></div>
     <div class="field"><label>API Key</label><input type="password" id="pr-key" placeholder="${p.has_key ? "（已配置，留空则不修改）" : "粘贴密钥"}">
-      <div class="help">只存在本地 config.toml，不会外传</div></div>
+      <div class="help">仅保存在本机，不会外传</div></div>
     <div class="field"><label>模型列表（每行一个）</label>
       <textarea id="pr-models" class="mono" rows="4">${esc((p.models || []).join("\n"))}</textarea>
       <div class="help">模型名要和服务商文档一致；有些服务需要带前缀（如 qwen/qwen3-max）</div></div>
@@ -8647,7 +8996,7 @@ function providerEdit(p, models) {
      · 来源是 default（没人声明，用默认 1M）→ 也照实显示 1M，不再显示「未限制」；
      · 真取不到数值 → 才视为「未限制」。
    为什么改：旧规则把兜底值整体判成「未限制」，用户填了窗口/换了模型都看不出差别
-   （实测反馈「换模型后显示设置里的上下文，换回来又没效果」）。
+   （实际使用中「换模型后显示设置里的上下文，换回来又没效果」）。
    抽成函数是因为「保存逐模型设置」「切换模型」后都要立刻重算，不能只算一次。 */
 function applyContextLimit(d) {
   d = d || S.boot || {};
@@ -9910,7 +10259,7 @@ document.addEventListener("toggle", (e) => {
 }, true);
 // 思考区滚动：由「用户操作」维护跟随标志。
 // ★ 为什么不用内容增长后的距底判断：新内容一进来距底就变大，会把「用户还在底部」
-//   误判成「已上滑」，从此不再跟随（实测反馈「滑到最底也不跟」）。
+//   误判成「已上滑」，从此不再跟随（实际使用中「滑到最底也不跟」）。
 //   scroll 事件不冒泡，所以用 capture 阶段捕获。
 document.addEventListener("scroll", (e) => {
   const rc = e.target;

@@ -157,7 +157,7 @@ def _check_images(atts: list[Any], *, model_ref: str | None) -> str:
     if not images:
         return ""
     if not _vision_supported(model_ref):
-        return "当前模型不支持图片输入，请换一个支持视觉的模型，或去掉图片后再发。"
+        return "当前模型不支持图片，请换支持视觉的模型，或去掉图片。"
     # 单图上限 8MB（base64 前）：超过就不往上游发了
     LIMIT = 8 * 1024 * 1024
     for a in images:
@@ -1227,6 +1227,28 @@ async def api_providers(request: Any) -> Response:
         prov.enabled = bool(body.get("enabled", True))
         mgr.upsert_provider(prov)
         return _json({"ok": True, "enabled": prov.enabled})
+    if action == "set_models":
+        # ★ 1.5.0：逐模型勾选后点「保存」提交 —— 保留勾上的，移除没勾的。
+        #   为什么单独一个 action 而不是复用 update：这里要**原子地**同时改
+        #   模型列表、清掉被移除模型的覆盖设置、修正 default；
+        #   分几步发请求容易中途失败留下不一致的配置。
+        name = str(body.get("name") or "")
+        prov = mgr.get_provider(name)
+        if prov is None:
+            return _err(f"没有找到供应商：{name}", 404)
+        raw = [str(m) for m in (body.get("models") or []) if str(m).strip()]
+        seen: set[str] = set()
+        keep = [m for m in raw if not (m in seen or seen.add(m))]
+        prov.models = keep
+        # 没勾的模型，连同它的覆盖设置一起清掉 —— 否则下次「测试并获取模型」
+        # 把它加回来时，会带着旧的 enabled=false 又显示成未勾选。
+        for m in list(prov.model_overrides.keys()):
+            if m not in keep:
+                prov.model_overrides.pop(m, None)
+        if prov.default not in keep:
+            prov.default = keep[0] if keep else ""
+        mgr.upsert_provider(prov)
+        return _json({"ok": True, "models": keep, "default": prov.default})
     if action == "model_override":
         # 逐模型的「启用 / 上下文窗口 / 输出上限 / 支持图片」等覆盖设置。
         # ★ 需求：模型前面有勾选框，勾上才启用；启用后可单独配置这几项；
@@ -1527,6 +1549,140 @@ async def api_open_path(request: Any) -> Response:
     except Exception as e:
         return _err(f"打开失败：{e}", 500)
     return _json({"ok": True, "path": str(p)})
+
+
+def _path_roots() -> list[str]:
+    """可供一键跳转的根：Windows 列存在的盘符，其它平台给 / 与家目录。"""
+    if os.name == "nt":
+        out: list[str] = []
+        for letter in "CDEFGHIJKLMNOPQRSTUVWXYZAB":
+            d = f"{letter}:\\"
+            with contextlib.suppress(OSError):
+                if os.path.exists(d):
+                    out.append(d)
+        return out
+    return ["/", str(Path.home())]
+
+
+async def api_paths(request: Any) -> Response:
+    """路径工具：解析可写 / 可读范围，以及浏览本机目录（「选文件夹」用）。
+
+    ★ 为什么必须放在后端：浏览器拿不到本机目录树 —— 网页版在 http 下没有
+      文件系统接口，桌面端也只暴露了受控的 IPC。前端自己画不出文件夹选择框，
+      所以「选文件夹」这件事只能由服务进程来列举目录。
+    """
+    if not _auth_ok(request):
+        return _err("未授权", 401)
+    import tempfile
+
+    from .. import paths as _p
+    from ..security.paths import expand_vars
+
+    mgr = STATE.manager
+    ws = str(mgr.config.agent.workspace_override or _p.workspace_dir())
+
+    if request.method != "GET":
+        return _err("仅支持 GET")
+
+    raw_path = (request.query_params.get("path") or "").strip()
+    if raw_path:
+        # 列一个目录下的子目录
+        try:
+            base = Path(os.path.abspath(os.path.expanduser(raw_path)))
+        except Exception as e:
+            return _err(f"路径无法解析：{e}", 400)
+        if not base.is_dir():
+            return _err("不是目录或不存在", 404)
+        dirs: list[dict[str, str]] = []
+        try:
+            for it in sorted(base.iterdir(), key=lambda p: p.name.lower()):
+                try:
+                    if it.is_dir():
+                        dirs.append({"name": it.name, "path": str(it)})
+                except OSError:
+                    continue
+        except OSError as e:
+            return _err(f"无法读取该目录：{e}", 403)
+        return _json({
+            "path": str(base),
+            "parent": "" if base.parent == base else str(base.parent),
+            "dirs": dirs,
+            "roots": _path_roots(),
+        })
+
+    def resolved(items: Any) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for raw in items or []:
+            try:
+                p = expand_vars(str(raw), workspace=ws)
+                ap = Path(os.path.abspath(os.path.expanduser(p)))
+                out.append({"raw": str(raw), "path": str(ap), "exists": ap.is_dir()})
+            except Exception:
+                out.append({"raw": str(raw), "path": "", "exists": False})
+        return out
+
+    return _json({
+        "workspace": ws,
+        "home": str(Path.home()),
+        "tmp": tempfile.gettempdir(),
+        "write_paths": resolved(mgr.config.permissions.write_paths),
+        "read_paths": resolved(mgr.config.permissions.read_paths),
+        "roots": _path_roots(),
+    })
+
+
+async def api_file_diff(request: Any) -> Response:
+    """返回某个文件的「改动前后对比」。
+
+    ★ 为什么能拿到「改动前」：文件工具在覆盖前会把原文件备份成
+      ``<名字>.bak-<时间戳>``（见 utils.snapshot_path），与目标同目录。
+      这里找**最近一个**同目录备份，与当前文件做 unified diff。
+    ★ 受「外观 → 界面元素 → 改文件时显示前后对比」开关控制：关掉时前端不显示入口，
+      这里也直接拒绝，避免成为绕过开关的后门。
+    """
+    if not _auth_ok(request):
+        return _err("未授权", 401)
+    if STATE.manager.config.ui.diff_review is False:
+        return _err("「改文件时显示前后对比」已在设置中关闭", 403)
+    raw = (request.query_params.get("path") or "").strip()
+    if not raw:
+        return _err("缺少 path", 400)
+    target = Path(os.path.abspath(os.path.expanduser(raw)))
+    if not target.is_file():
+        return _err("文件不存在", 404)
+    # 找同目录里最近的备份：<名字>.bak-* 或 <名字>.bak-*-<tag>
+    best: Path | None = None
+    try:
+        for it in target.parent.glob(target.name + ".bak-*"):
+            try:
+                if not it.is_file():
+                    continue
+                if best is None or it.stat().st_mtime > best.stat().st_mtime:
+                    best = it
+            except OSError:
+                continue
+    except OSError as e:
+        return _err(f"无法读取目录：{e}", 403)
+    if best is None:
+        return _json({"ok": True, "path": str(target), "backup": "",
+                      "diff": "", "note": "没有找到改动前的备份，无法生成对比"})
+    import difflib
+
+    def read_text(p: Path) -> list[str]:
+        try:
+            return p.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+        except OSError:
+            return []
+
+    old = read_text(best)
+    new = read_text(target)
+    diff = "".join(difflib.unified_diff(
+        old, new, fromfile=best.name, tofile=target.name, n=3))
+    # 上限保护：超大文件的 diff 不往界面送
+    if len(diff) > 400_000:
+        diff = diff[:400_000] + "\n…（对比内容过长，已截断）"
+    return _json({"ok": True, "path": str(target), "backup": str(best),
+                  "backup_time": best.stat().st_mtime, "diff": diff, "note": ""})
 
 
 async def api_recovery(request: Any) -> Response:
@@ -2072,6 +2228,12 @@ async def api_chat(request: Any) -> Response:
     # ★ 解析附件（图片/文件）。旧代码只拿它做非空校验就丢掉了，
     #   于是用户拖进来的图片**从来没有发给模型** —— 这是「假多模态」的关键断点。
     atts = _parse_attachments(body.get("attachments"))
+    # ★ 1.5.0：本轮带图片、而当前模型不支持视觉时，改用「图片理解」模型（若已配置）。
+    #   此前这一项在界面上可设、存进配置后从不被读 —— 设了等于没设。
+    if atts and any(getattr(a, "kind", "") == "image" for a in atts):
+        _vm = str(getattr(STATE.manager.config.agent, "vision_model", "") or "").strip()
+        if _vm and not _vision_supported(model or STATE.manager.default_model_ref()):
+            model = _vm
     # ★ 图片两道闸：能力门控 + 超尺寸拦截。
     #   本地先挡住并说清原因，比让上游返回 400 把整轮对话废掉便宜得多。
     try:
@@ -2644,11 +2806,21 @@ async def api_plugins(request: Any) -> Response:
         return _json({"plugins": [], "panels": [], "stats": {}})
     pm = STATE.plugins
     if request.method == "GET":
-        return _json({"plugins": pm.list(), "panels": pm.panel_list(), "stats": pm.stats()})
+        # ★ 1.5.0：把插件注册的扩展点一并暴露 —— 此前它们只有定义、从不被读取，
+        #   插件作者按文档注册后界面上看不到、也调不到。
+        return _json({"plugins": pm.list(), "panels": pm.panel_list(), "stats": pm.stats(),
+                      "providers": pm.provider_specs(), "agents": pm.agent_specs(),
+                      "commands": pm.command_list()})
     body = await _body(request)
     action = str(body.get("action") or "")
     name = str(body.get("name") or "")
     try:
+        if action == "command":
+            # 执行插件注册的命令
+            res = pm.run_command(name, body.get("args") or {})
+            if res is None:
+                return _err(f"没有这个插件命令：{name}", 404)
+            return _json({"ok": True, "result": to_plain(res)})
         if action == "enable":
             ok = pm.enable(name, True)
         elif action == "disable":
@@ -3377,6 +3549,8 @@ def create_app() -> Starlette:
         Route("/api/sandbox-probe", api_sandbox_probe, methods=["GET"]),
         Route("/api/recovery", api_recovery, methods=["GET", "POST"]),
         Route("/api/open", api_open_path, methods=["POST"]),
+        Route("/api/paths", api_paths, methods=["GET"]),
+        Route("/api/file-diff", api_file_diff, methods=["GET"]),
         Route("/api/workspace-file", api_workspace_file_read, methods=["GET"]),
         Route("/api/workspace-file", api_workspace_file_write, methods=["PUT", "POST"]),
         Route("/api/chat", api_chat, methods=["POST"]),

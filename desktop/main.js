@@ -1062,6 +1062,23 @@ ipcMain.handle("fengcode:showInFolder", (_e, filePath) => {
   return true;
 });
 
+// ★ 选文件夹（沙箱页的可写范围用）。只回传路径字符串，
+//   主进程不读也不写那个目录 —— 授权与否由后端的路径校验决定。
+ipcMain.handle("fengcode:pickFolder", async (_e, startPath) => {
+  if (!mainWindow) return "";
+  const opts = {
+    title: "选择允许写入的文件夹",
+    properties: ["openDirectory", "createDirectory"],
+  };
+  if (typeof startPath === "string" && startPath
+      && !startPath.startsWith("$") && fs.existsSync(startPath)) {
+    opts.defaultPath = startPath;
+  }
+  const r = await dialog.showOpenDialog(mainWindow, opts);
+  if (!r || r.canceled || !r.filePaths || !r.filePaths.length) return "";
+  return r.filePaths[0];
+});
+
 ipcMain.handle("fengcode:windowAction", (_e, action) => {
   if (!mainWindow) return false;
   if (action === "minimize") mainWindow.minimize();

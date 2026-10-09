@@ -228,6 +228,12 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 
 /* ============ 布局 ============ */
 #app { display: grid; grid-template-columns: var(--side-w, 248px) 1fr; height: 100vh; }
+/* ★ 1.5.0：主体**显式**落在第 2 列。
+   为什么必须显式指定：网格是自动排布的，只要侧栏不占位（no-sidebar 时被隐藏、
+   或窄视口下改成 position:fixed 脱离文档流），主体就会被排进**第 1 列** ——
+   而第 1 列在那些情形下宽度是 0。实测手机扫码打开（390×844）时主体宽 0，
+   整页一片空白，只有顶栏露出 22px。 */
+#app > #main { grid-column: 2; }
 #app.no-sidebar { grid-template-columns: 0 1fr; }
 /* 设置模式：隐藏左侧会话栏（设置中心有自己的左导航），但**保留顶栏**。
    ★ 为什么必须保留顶栏：顶栏右侧是窗口的 最小化/最大化/关闭 三个按钮，
@@ -235,6 +241,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
    内容区高度由 flex 自然分配（原来是 height:100vh，那是配合隐藏顶栏写的）。 */
 #app.settings-mode { grid-template-columns: 1fr; }
 #app.settings-mode > #sidebar { display: none; }
+#app.settings-mode > #main { grid-column: 1; }
 
 /* ---- 侧边栏 ---- */
 #sidebar {
@@ -866,6 +873,58 @@ details.prov-more > summary:hover { color: var(--text); }
 .rule-item .rule-del:hover { color: var(--danger, #d33); background: var(--bg-elev); }
 .rule-list { min-height: 22px; }
 
+/* ★ 1.5.0：可写目录列表（沙箱页）。
+   为什么做成逐行列表而不是一个多行文本框：旧写法让用户手敲路径，
+   既没法浏览选择、也看不出哪条是「已经生效的目录」——
+   实际使用中就是「让在白名单添加，找不到白名单」。 */
+.path-list { margin-bottom: 8px; }
+.path-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; margin-bottom: 6px; border-radius: 11px;
+  background: var(--bg); border: 1px solid var(--border);
+  font-size: calc(12px * var(--ui-scale));
+}
+.path-row .p-ico { display: flex; flex: none; color: var(--text-faint); }
+.path-row .p-path {
+  flex: 1; min-width: 0; font-family: "SF Mono", Consolas, monospace;
+  font-size: calc(11.5px * var(--ui-scale));
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.path-row .p-tag { flex: none; }
+.path-row .p-del {
+  cursor: pointer; color: var(--text-faint); display: flex; align-items: center;
+  padding: 2px; border-radius: 8px;
+}
+.path-row .p-del:hover { color: var(--danger, #d33); background: var(--bg-elev); }
+.path-list .empty { padding: 6px 2px; }
+
+/* 目录选择框（网页版退回用；桌面端直接弹系统对话框） */
+.dirpick { display: flex; flex-direction: column; gap: 9px; }
+.dirpick .dp-crumbs {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  padding: 6px 10px; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 11px; font-size: calc(12px * var(--ui-scale));
+}
+.dirpick .dp-crumbs .dp-up { cursor: pointer; color: var(--accent); }
+.dirpick .dp-crumbs .dp-up:hover { text-decoration: underline; }
+.dirpick .dp-cur {
+  flex: 1; min-width: 0; font-family: "SF Mono", Consolas, monospace;
+  font-size: calc(11.5px * var(--ui-scale)); color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dirpick .dp-roots { display: flex; gap: 6px; flex-wrap: wrap; }
+.dirpick .dp-list {
+  max-height: 300px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 11px; background: var(--bg);
+}
+.dirpick .dp-row {
+  display: flex; align-items: center; gap: 8px; padding: 7px 10px; cursor: pointer;
+  font-size: calc(12.5px * var(--ui-scale)); border-bottom: 1px solid var(--border);
+}
+.dirpick .dp-row:last-child { border-bottom: none; }
+.dirpick .dp-row:hover { background: var(--bg-hover, rgba(128,128,128,.08)); }
+.dirpick .dp-row .dp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* ★ 1-G：权限规则写法告警（写了却永远匹配不到 = 安全规则静默失效） */
 .perm-warn {
   margin-bottom: 11px; padding: 9px 11px; border-radius: 11px;
@@ -927,7 +986,7 @@ details.prov-more > summary:hover { color: var(--text); }
   font-size: calc(12px * var(--ui-scale)); line-height: 1.7; color: var(--text-soft);
   word-break: break-word;
 }
-/* ★★ 默认只显示**一行摘要**（实测反馈：整段铺开时长记忆一条占大半屏）。
+/* ★★ 默认只显示**一行摘要**（实际使用中：整段铺开时长记忆一条占大半屏）。
    摘要单独一行、超出省略，鼠标悬停看全文（title 属性）。 */
 .memo-item .memo-line {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -1009,8 +1068,31 @@ input[type=text], input[type=password], input[type=number], select, textarea {
 input:focus, select:focus, textarea:focus { border-color: var(--accent); outline: none; }
 textarea { resize: vertical; min-height: 70px; line-height: 1.55; }
 textarea.mono { font-family: "SF Mono", Consolas, monospace; font-size: calc(12px * var(--ui-scale)); }
-.switch { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; font-size: calc(12.5px * var(--ui-scale)); user-select: none; }
-.switch input { width: auto; margin: 0; accent-color: var(--accent); }
+.switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: calc(12.5px * var(--ui-scale)); user-select: none; }
+/* ★ 1.5.0：开关统一改成**拨动开关**外观（原来是方框打勾，要凑近看才知道开没开）。
+   ★ 为什么只改 CSS、不动 HTML：全站二十多处都是
+     `<label class="switch"><input type="checkbox" id="x">文字</label>`，
+     改这一处样式全部生效，也不碰任何 `checked` 读取逻辑。
+   ★ 例外：模型行的启用勾选（.mck）保持方框 —— 那是列表里逐项启停，
+     不是「某个功能开/关」，一行一个滑块会让整张列表显得很吵，
+     而且用户明确说了「模型服务里的选择模型除外」。 */
+.switch:not(.mck) input[type="checkbox"] {
+  appearance: none; -webkit-appearance: none;
+  width: 34px; height: 20px; flex: none; margin: 0; padding: 0; border: 0;
+  border-radius: 999px; background: var(--border-strong); position: relative;
+  cursor: pointer; transition: background .16s;
+}
+.switch:not(.mck) input[type="checkbox"]::after {
+  content: ""; position: absolute; top: 2px; left: 2px;
+  width: 16px; height: 16px; border-radius: 50%; background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .28); transition: transform .16s;
+}
+.switch:not(.mck) input[type="checkbox"]:checked { background: var(--accent); }
+.switch:not(.mck) input[type="checkbox"]:checked::after { transform: translateX(14px); }
+.switch:not(.mck) input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.switch:not(.mck) input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
+/* 模型行的启用勾选：保持原生方框 */
+.mck input[type="checkbox"] { width: auto; margin: 0; accent-color: var(--accent); }
 
 /* ---- 账号面板（可选账号源）---- */
 /* 已登录态：左边身份、右边余额。余额是主角，字号加大。 */
@@ -1211,7 +1293,7 @@ td.mono, th.mono { font-family: "SF Mono", Consolas, monospace; font-size: calc(
   border: none; border-left: 2px solid var(--border-strong);
   border-radius: 0 10px 10px 0;
   background: transparent;
-  /* ★ 右侧 margin 用 auto → 思考块**靠左**，不再被推到右边（实测反馈的「错位」）。
+  /* ★ 右侧 margin 用 auto → 思考块**靠左**，不再被推到右边（实际使用中的「错位」）。
      宽度用 min(720px, 100%)：窄窗口下跟着变窄，不会溢出、也不会被裁。 */
   margin: 2px auto 8px 0;
   max-width: min(720px, 100%);
@@ -1249,7 +1331,7 @@ td.mono, th.mono { font-family: "SF Mono", Consolas, monospace; font-size: calc(
   white-space: pre-wrap; line-height: 1.75;
   max-height: 340px; overflow-y: auto;
   /* ★ 不再用 overscroll-behavior: contain —— 思考内容不满一屏时，contain 会让滚轮
-     完全失去作用，用户感觉「滚轮被锁死、滑不动」（实测反馈）。
+     完全失去作用，用户感觉「滚轮被锁死、滑不动」（实际使用中）。
      现在恢复默认：块内能滚就滚，滚到边界后自然交给外层对话区。 */
 }
 /* 流式进行中的思考块：标题微微呼吸，提示后台在想 */
@@ -1739,7 +1821,7 @@ body.resizing #infopanel { transition: none; }
   background: var(--bg-elev); border: 1px solid var(--accent); border-radius: 15px;
   padding: 13px 15px; box-shadow: var(--shadow-lg);
   /* ★★ 宽度必须与对话区**一致**：外层 .msg-wrap 已限宽（max-width 880px + 左右 24px 内边距），
-     卡片自己再写一个固定 max-width 就会比消息窄一截，看起来像缩在角落里（实测反馈「长度不跟对话一致」）。
+     卡片自己再写一个固定 max-width 就会比消息窄一截，看起来像缩在角落里（实际使用中「长度不跟对话一致」）。
      这里只保留 100% 跟随外层，不再自带宽度。 */
   width: 100%; max-width: 100%; box-sizing: border-box;
 }
@@ -1772,7 +1854,7 @@ body.resizing #infopanel { transition: none; }
 }
 .ask .ask-input:focus { outline: none; border-color: var(--accent); }
 /* ★★ 「不回答，你自己决定」必须**像按钮**，且与「提交」同一行左右分列。
-   踩过的坑：初版写成单独一行 + ghost 弱化样式，用户根本注意不到（实测反馈「很容易忽略」）。
+   踩过的坑：初版写成单独一行 + ghost 弱化样式，用户根本注意不到（实际使用中「很容易忽略」）。
    现在：左边一个实底描边按钮（看得见、点得到），右边「提交」，语义相反所以分居两端。 */
 .ask .ask-actions { display: flex; align-items: center; gap: 7px; margin-top: 9px; }
 .ask .ask-skip {
@@ -1952,6 +2034,14 @@ pre.block {
   background: var(--accent); color: #fff; font-weight: 600;
   box-shadow: 0 1px 3px rgba(0,0,0,.14);
 }
+/* ★ 1.5.0：被升级成分段按钮组的 <select>。
+   保留在 DOM 里（`$("#id").value` 与所有既有取值逻辑照旧可用），但不显示。
+   为什么不直接把 select 删掉：全站保存逻辑都靠 `val("p-mode")` 这类读 `.value`，
+   换成 div 会让 `.value` 变 undefined，得逐处改读取点 —— 那才是引入 bug 的路子。 */
+select.seg-src { display: none !important; }
+/* 分段按钮组放进设置行的控件位（右侧或字段下方）时的宽度约束 */
+.sr-ctl > .seg, .field > .seg { max-width: 100%; }
+.sr-ctl > .seg .seg-btn, .field > .seg .seg-btn { white-space: nowrap; }
 
 /* ==========================================================================
    界面动画：让切换/出现更柔和（实测"太生硬"）

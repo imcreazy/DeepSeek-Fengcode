@@ -46,7 +46,7 @@ test('★ 凭证不进前端：界面只提交账密、只接收脱敏快照', (
   // 密码框必须是 password 类型，且不回显任何已存密码
   assert.ok(fn.includes('type="password"'), '密码输入框必须是 password 类型');
   assert.ok(!/value="\$\{[^}]*pass/.test(fn), '密码框不得回填任何已存密码');
-  // 登录只把账密发给我们自己的后端，由后端转发；界面不直连站点
+  // 登录只把账密发给本程序后端，由后端转发；界面不直连站点
   assert.ok(fn.includes('action: "login"'), '登录应走 { action: "login" } 由后端代理');
   assert.ok(
     !/liufengzi|qd\.je/.test(appSrc),

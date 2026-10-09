@@ -29,6 +29,11 @@ contextBridge.exposeInMainWorld("fengcode", {
   /** 在系统文件管理器中显示文件或文件夹 */
   showInFolder: (filePath) => ipcRenderer.invoke("fengcode:showInFolder", filePath),
 
+  /** ★ 弹出系统「选择文件夹」对话框，返回绝对路径（取消则空串）。
+      沙箱页「选文件夹」用：桌面端走系统对话框最顺手；
+      网页版没有这个能力，前端会退回后端列目录的选择框。 */
+  pickFolder: (startPath) => ipcRenderer.invoke("fengcode:pickFolder", startPath),
+
   /** 发系统通知 */
   notify: (title, body) => ipcRenderer.invoke("fengcode:notify", { title, body }),
 

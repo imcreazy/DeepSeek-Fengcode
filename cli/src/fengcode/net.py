@@ -90,7 +90,7 @@ def no_proxy_list(net: Any) -> str:
     return str(getattr(net, "no_proxy", "") or "")
 
 
-# 我们管理的环境变量名（改档位时要整体重设或清除）
+# 本程序管理的环境变量名（改档位时要整体重设或清除）
 _ENV_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
              "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy")
 
@@ -103,7 +103,7 @@ def apply_to_env(mgr: Any = None) -> str:
       （模型、MCP、向量、网页抓取、账号…），逐个传代理容易漏、以后新增的还会忘。
       写进环境变量则**一处生效、全部受益**，新增客户端自动跟随。
     ★ 桌面端是主进程拉起的子进程，它的初始环境用户改不了 —— 所以「跟随系统」
-      指的是**这台机器上已有的代理环境变量**，而手动/直连由我们在这里覆写。
+      指的是**这台机器上已有的代理环境变量**，而手动/直连由本程序在这里覆写。
     """
     net = config_of(mgr)
     mode = str(getattr(net, "mode", "system") or "system")

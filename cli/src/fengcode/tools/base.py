@@ -331,6 +331,19 @@ class ToolRegistry:
 
         ctx.emit("tool.start", {"name": tool.name, "arguments": args, "group": tool.group})
 
+        # ★ 1.5.0：插件扩展点接到真实执行链上。
+        #   此前 `veto_tool` / `after_tool` 只有定义、从不被调用 ——
+        #   插件作者按文档注册了拦截钩子，实际一次都不会生效。
+        _plugs = getattr(getattr(ctx, "agent", None), "_plugins", None)
+        if _plugs is not None and not skip_approval:
+            try:
+                _why = _plugs.veto_tool(tool.name, args)
+            except Exception:
+                _why = None
+            if _why:
+                ctx.emit("tool.end", {"name": tool.name, "ok": False, "error": str(_why)})
+                return ToolResult.fail(f"插件拦截了该操作：{_why}")
+
         try:
             result = await tool.run(ctx, **args)
         except asyncio.CancelledError:
@@ -339,6 +352,12 @@ class ToolRegistry:
         except Exception as e:
             result = ToolResult.fail(f"{type(e).__name__}: {e}")
         result.duration = time.time() - t0
+
+        if _plugs is not None:
+            try:
+                _plugs.after_tool(tool.name, args, result, result.duration)
+            except Exception:
+                pass
 
         # 输出截断
         text, trunc = self._apply_limit(tool, result.content)

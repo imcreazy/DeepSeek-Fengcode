@@ -798,6 +798,66 @@ class PluginManager:
             out.append(str(extra))
         return out
 
+    # ---- 插件注册的扩展点：供各处真正消费（1.5.0）----------------------
+    # ★ 此前 register_provider / register_agent / register_command 只有定义、
+    #   从不被读取 —— 插件作者按文档注册后一次都不会生效。这里给出统一的读取入口。
+    def provider_specs(self) -> list[dict[str, Any]]:
+        """插件注册的供应商（合并进可用供应商列表）。"""
+        out: list[dict[str, Any]] = []
+        for p in self.plugins.values():
+            if p.api is None:
+                continue
+            for spec in p.api._providers:
+                d = dict(spec)
+                d.setdefault("plugin", p.manifest.name)
+                out.append(d)
+        return out
+
+    def agent_specs(self) -> list[dict[str, Any]]:
+        """插件注册的子智能体类型。"""
+        out: list[dict[str, Any]] = []
+        for p in self.plugins.values():
+            if p.api is None:
+                continue
+            for spec in p.api._agents:
+                d = dict(spec)
+                d.setdefault("plugin", p.manifest.name)
+                out.append(d)
+        return out
+
+    def command_list(self) -> list[dict[str, Any]]:
+        """插件注册的命令（名称与说明；处理器不外传）。"""
+        out: list[dict[str, Any]] = []
+        for p in self.plugins.values():
+            if p.api is None:
+                continue
+            for c in p.api._commands:
+                out.append({
+                    "plugin": p.manifest.name,
+                    "name": str(c.get("name") or ""),
+                    "description": str(c.get("description") or ""),
+                    "parameters": c.get("parameters") or {},
+                })
+        return out
+
+    def run_command(self, name: str, args: dict[str, Any] | None = None) -> Any:
+        """执行插件注册的命令；找不到返回 None。"""
+        for p in self.plugins.values():
+            if p.api is None:
+                continue
+            for c in p.api._commands:
+                if str(c.get("name") or "") != name:
+                    continue
+                handler = c.get("handler")
+                if not callable(handler):
+                    return None
+                res = handler(args or {})
+                if asyncio.iscoroutine(res):
+                    return self._run_coro(res)
+                return res
+        return None
+
+
     # ---- 查询 ----------------------------------------------------------
     def _find(self, name: str) -> PluginManifest | None:
         for man in self.discover():

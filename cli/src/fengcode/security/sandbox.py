@@ -318,7 +318,7 @@ def _exit_signal(returncode: int | None, timed_out: bool, killed: bool) -> str |
 
     POSIX 下被信号杀死的进程 returncode 是负数（-SIG）。
     Windows 下 taskkill 通常给出非零正整数，因此仅靠 returncode 无法可靠判断，
-    但我们知道是自己杀的（timed_out / killed），这本身就是独立事实。
+    但程序知道是自己杀的（timed_out / killed），这本身就是独立事实。
     """
     if killed:
         return "SIGKILL(主动取消)"

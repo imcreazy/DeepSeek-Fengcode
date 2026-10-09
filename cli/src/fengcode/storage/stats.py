@@ -101,7 +101,7 @@ class StatsStore:
                  session_id: str | None = None) -> list[dict[str, Any]]:
         # ★★ 过滤「真·零用量」条目：调用失败（上游 400、连接被掐断）也会写一条
         #   usage_log，prompt/output 全是 0 —— 按 provider+model 分组照旧会生成一行，
-        #   界面上就成了「一个我从没用过的模型，占 0%」（实测反馈：明明没用过 glm，
+        #   界面上就成了「一个我从没用过的模型，占 0%」（实际使用中：明明没用过 glm，
         #   用量分析里却有一行）。0 token 且 0 费用不携带任何信息，直接不列。
         #   与前端 renderUsageBreakdown 的过滤同一口径，两端必须一起改。
         where, params = self._where(since, session_id)

@@ -8,10 +8,10 @@
 
 **A. 下载安装包（最简单）**
 到 [Releases](https://github.com/imcreazy/DeepSeek-Fengcode/releases/latest) 下载
-`Fengcode-*-setup.exe`，双击安装。
+`Fengcode-*-setup.exe`，运行安装。
 
 **B. 解压即用**
-下载 `Fengcode-*-win64.zip`，解压后双击 `Fengcode.exe`。
+下载 `Fengcode-*-win64.zip`，解压后运行 `Fengcode.exe`。
 
 **C. 从源码跑**
 ```bash

@@ -49,7 +49,7 @@ def is_retryable_status(status: int) -> bool:
 
 # ---- 分层网络诊断 --------------------------------------------------------
 # ★ 为什么需要（实测痛点）：断线时界面只有一句「网络错误：ConnectError」，
-#   分不清是「我们自己的网络 / 上游网关 / 模型服务」哪一层断的，只能干等超时。
+#   分不清是「本机网络 / 上游网关 / 模型服务」哪一层断的，只能干等超时。
 #   这里把异常按发生位置归到五层，每层给一句人话 + 下一步动作。
 _LAYER_DNS = "dns"          # 域名解析失败：本机 DNS / 域名写错
 _LAYER_REFUSED = "refused"  # 连接被拒：地址或端口不对、服务没起
@@ -212,7 +212,7 @@ class BaseLLMClient(abc.ABC):
                 last = e
                 if i == attempts - 1:
                     # ★ 分层诊断：把「哪个环节断了」说清楚，而不是甩一句
-                    #   「网络错误：ConnectError」（实测反馈就是分不清层次）。
+                    #   「网络错误：ConnectError」（实际使用中就是分不清层次）。
                     layer, hint = diagnose_error(e)
                     raise LLMError(hint, retryable=True) from e
             # 指数退避 + 抖动

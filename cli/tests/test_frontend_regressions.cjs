@@ -23,7 +23,7 @@ test('tool delta event name matches between backend and frontend', () => {
   const events = fs.readFileSync('D:/Fengcode/cli/src/fengcode/events.py', 'utf8');
   const m = events.match(/TOOL_DELTA\s*=\s*"([^"]+)"/);
   assert.ok(m, 'events.py 里应能取到 TOOL_DELTA 常量');
-  assert.equal(m[1], 'tool_delta', 'TOOL_DELTA 必须是下划线写法，与前端 case 对齐');
+  assert.equal(m[1], 'tool_delta', 'TOOL_DELTA 必须是下划线写法，与前端 case 一致');
   assert.ok(source.includes(`case "${m[1]}"`), `app.js 里必须有 case "${m[1]}" 分支`);
   assert.ok(!source.includes('case "tool.delta"'), 'app.js 不应残留点号写法');
 });

@@ -286,12 +286,16 @@ class SubAgentRunner:
         tools = st.tools if st.tools is not None else TYPE_TOOLS.get(atype)
         budget = st.budget_tokens or int(cfg.subagents.default_budget_tokens)
         timeout = st.timeout or float(cfg.subagents.default_timeout)
+        # ★ 1.5.0：子代理推理强度接到真实调用上（此前界面上可设、存进配置后从不被读）。
+        #   空串 = 继承默认（不传，交给 provider 侧声明）。
+        effort = str(getattr(cfg, "subagent_effort", "") or "").strip()
         return {
             "agent_type": atype,
             "model": model,
             "tools": tools,
             "budget_tokens": budget,
             "timeout": timeout,
+            "effort": effort or None,
         }
 
     # ---- 执行 ----------------------------------------------------------
@@ -400,7 +404,8 @@ class SubAgentRunner:
             if self._depth != depth:
                 self._depth = depth
             try:
-                resp = await self.agent.llm.chat(msgs, model=opts["model"], tools=specs or None)
+                resp = await self.agent.llm.chat(msgs, model=opts["model"],
+                                                 tools=specs or None, effort=opts["effort"])
             except Exception as e:
                 if last_text:
                     return last_text, step, used, calls_log
@@ -433,7 +438,7 @@ class SubAgentRunner:
                 )
         msgs.append(Message.system("已达步数上限，请直接给出当前结论。"))
         try:
-            resp = await self.agent.llm.chat(msgs, model=opts["model"])
+            resp = await self.agent.llm.chat(msgs, model=opts["model"], effort=opts["effort"])
             return resp.content or last_text, max_steps, used, calls_log
         except Exception:
             return last_text, max_steps, used, calls_log

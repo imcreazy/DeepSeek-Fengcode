@@ -292,8 +292,29 @@ class WebSearchTool(Tool):
             if sn:
                 lines.append(f"   {truncate_middle(sn, 400)}")
             lines.append("")
+        content = "\n".join(lines)
+        # ★ 1.5.0：「网页搜索」模型接到真实调用上（此前界面上可设、存进配置后从不被读）。
+        #   配置了就让它把结果归纳成一段摘要，摆在原始结果前面。
+        summary = ""
+        try:
+            from ..llm.types import Message as _Msg
+
+            _sm = str(getattr(getattr(ctx.config, "agent", None), "search_model", "") or "").strip()
+            if _sm and ctx.llm is not None:
+                _resp = await ctx.llm.chat(
+                    [
+                        _Msg.system("把下面的搜索结果归纳成要点，保留关键事实与来源编号，不要编造。"),
+                        _Msg.user(content[:12000]),
+                    ],
+                    model=_sm, max_tokens=800,
+                )
+                summary = (_resp.content or "").strip()
+        except Exception:
+            summary = ""
+        if summary:
+            content = f"结果摘要（由搜索模型归纳）：\n{summary}\n\n原始结果：\n{content}"
         return ToolResult(
-            content="\n".join(lines),
+            content=content,
             display=f"搜索 “{truncate_middle(query, 30)}” → {len(results)} 条",
             data={"results": results, "engine": results[0].get("engine"), "query": query},
         )

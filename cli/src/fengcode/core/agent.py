@@ -89,7 +89,7 @@ class TurnResult:
     #   否则同一段回答会在界面上出现两遍（实测「发你好输出两次、重启才变一次」）。
     content_streamed: bool = False
     # ★ 完成回执：回合结束时告诉用户「这轮到底改了什么、验证没验证、还差什么」。
-    #   为什么要有：用户看不出 AI 是不是真做完了、改的是哪些文件（实测反馈
+    #   为什么要有：用户看不出 AI 是不是真做完了、改的是哪些文件（实际使用中
     #   「他说写好了，我去桌面找不到」）。三样东西都来自本回合的真实执行记录，
     #   不是模型自述 —— 所以它比正文里那句话可信。
     changed_files: list[str] = field(default_factory=list)   # 本回合被写/改的文件（真实路径）
@@ -476,7 +476,7 @@ class Agent:
         # ★ 「未限制」只保留一种情形：模型能力里确实取不到窗口（win <= 0）。
         #   旧写法把 source == "fallback" 整体判为「未限制 / 交给上游限制」，
         #   而 fallback 恰恰是「用户没填、内置表也没有」的常态 ——
-        #   于是界面长期显示「未限制」，看起来像没有限额（实测反馈）。
+        #   于是界面长期显示「未限制」，看起来像没有限额（实际使用中）。
         #   现在默认值改为 1M 且来源记为 default，这里按实际数值判断即可。
         win = int(info.get("context_window") or 0)
         unlimited = win <= 0
@@ -724,6 +724,11 @@ class Agent:
         else:
             normalized = normalize_mode((self.sessions.get(sid) or {}).get("mode"))
         result.mode = normalized
+
+        # ★ 1.5.0：计划模式用「独立规划模型」（若已配置）。
+        #   此前这一项在界面上可设、存进配置后从不被读 —— 设了等于没设。
+        if normalized == "plan" and cfg.agent.planner_model:
+            model = cfg.agent.planner_model
 
         self.bus.emit(Ev.TURN_START, {"input": truncate(user_input, 500)}, session_id=sid)
 
@@ -981,7 +986,7 @@ class Agent:
             # ★ 关键：这一轮的正文只是「准备调用工具前的说明」（如"我来查一下…"），
             #   它已经作为 assistant 消息写进会话历史了。交付给用户的答复是**工具链
             #   之后**那一轮的正文；所以这里把已累积的正文/思考清空，只留最后一轮的。
-            #   否则界面上同一个结论会被说两三遍（实测反馈：「重复三段」）。
+            #   否则界面上同一个结论会被说两三遍（实际使用中：「重复三段」）。
             final_text_parts.clear()
             reasoning_parts.clear()
 
@@ -1293,7 +1298,11 @@ class Agent:
     async def _call_once(self, msgs: list[Message], specs: list[ToolSpec],
                          *, model: str | None) -> LLMResponse:
         ref = model or (self.sessions.get(self.session_id) or {}).get("model") or None
-        return await self.llm.chat(msgs, model=ref, tools=specs or None)
+        # ★ 1.5.0：把「模型偏好」页的温度接到真实调用上。
+        #   以前界面上有这一项、存进配置后从不被读取，设了等于没设。
+        #   显式传值会覆盖 provider 侧的温度（router 用 setdefault，只在缺省时兜底）。
+        return await self.llm.chat(msgs, model=ref, tools=specs or None,
+                                   temperature=self.config.agent.temperature)
 
     async def _stream_once(
         self, msgs: list[Message], specs: list[ToolSpec], sid: str, *,
@@ -1313,7 +1322,8 @@ class Agent:
         last_diag: dict[str, Any] | None = None
 
         try:
-            async for ev in self.llm.chat_stream(msgs, model=ref, tools=specs or None):
+            async for ev in self.llm.chat_stream(msgs, model=ref, tools=specs or None,
+                                                 temperature=self.config.agent.temperature):
                 # ★ 用户点「停止」要立刻生效：_cancel 一置位就跳出流式接收。
                 #   旧写法只在「步与步之间」检查，流式过程中完全不看 ——
                 #   一次调用可能要跑几百秒（实测 651 秒），点停止像没反应。
