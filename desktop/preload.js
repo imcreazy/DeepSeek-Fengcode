@@ -40,6 +40,10 @@ contextBridge.exposeInMainWorld("fengcode", {
   /** 重启后端服务 */
   restartBackend: () => ipcRenderer.invoke("fengcode:restartBackend"),
 
+  /** ★ 设置「关闭窗口时的行为」：tray = 收进托盘，quit = 直接退出。
+      主进程据此决定 close 事件怎么处理 —— 界面上的下拉才真正生效。 */
+  setCloseAction: (action) => ipcRenderer.invoke("fengcode:setCloseAction", action),
+
   /** 控制无边框窗口 */
   windowAction: (action) => ipcRenderer.invoke("fengcode:windowAction", action),
 

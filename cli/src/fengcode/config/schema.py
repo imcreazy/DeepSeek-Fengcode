@@ -172,6 +172,10 @@ class AgentConfig(_Base):
     subagent_model: str | None = None
     vision_model: str | None = None
     search_model: str | None = None
+    # 主代理推理强度（low / medium / high / max），留空 = 用供应商声明里的默认档。
+    # ★ 这个值会真实传进模型调用（agent.py → llm.chat/chat_stream 的 effort 参数），
+    #   由各客户端映射为 reasoning_effort / thinking_budget。
+    effort: str = ""
     # 子代理推理强度
     subagent_effort: str = ""          # "" = 继承默认
     reasoning_language: str = "zh"
@@ -399,6 +403,12 @@ class UIConfig(_Base):
     drag_drop: bool = True
     autostart: bool = False
     sound: bool = False
+    # 桌面端关闭主窗口后的行为："tray" = 收进托盘继续跑（默认），"quit" = 直接退出。
+    # ★ 以前界面上有这个下拉，但**没人读**：既没有 onchange，也不在任何保存路径里，
+    #   选了等于没选（桌面端一直硬编码为「收到托盘」）。现在真接上主进程。
+    close_action: Literal["tray", "quit"] = "tray"
+    # 费用显示币种（只影响展示，不改结算）。
+    currency: str = "CNY"
 
 
 class ServerConfig(_Base):

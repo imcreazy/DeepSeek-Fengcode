@@ -317,7 +317,9 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 #main { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
 #topbar {
   height: 46px; flex: none; display: flex; align-items: center; gap: 10px;
-  position: relative; padding: 0 8px 0 14px; border-bottom: 1px solid var(--border); background: var(--bg-elev);
+  /* ★ 右侧不再留内边距：让最小化 / 最大化 / 关闭三个按钮真正贴到窗口右上角。
+     旧写法留了 8px，最右上角是一块空白，盲按关闭经常按不到。 */
+  position: relative; padding: 0 0 0 14px; border-bottom: 1px solid var(--border); background: var(--bg-elev);
 }
 /* 窗口拖拽区：留出右侧 138px 给最小化/最大化/关闭三个按钮。
    ⚠️ 这条拖拽层只在 #topbar 内，但 #topbar 的宽度不含右侧信息栏——

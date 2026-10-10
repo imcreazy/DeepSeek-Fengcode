@@ -51,6 +51,7 @@ const SEG_SELECTS = [
   "g-font",             // 界面字体
   "g-fontsize", "u-fontsize", // 字号档位
   "g-close",            // 关闭窗口时的行为
+  "a-effort",           // 主代理推理强度
   "a-subagent-effort",  // 子代理推理强度
   "sb-shell",           // Shell 解释器
   "net-type",           // 网络协议
@@ -1419,7 +1420,9 @@ async function openSetting(id) {
       // 保存条在 settings 页各面板之外，搬面板时不会被带上，补一个。
       // ⚠️ 必须挂在「滚动容器」#settings-body 上，不能挂在 #ss-host：
       //    sticky 的活动范围受父元素边界限制，挂在 #ss-host 里会卡在内容中间浮起来。
-      const needsSave = ["model", "agent", "safety", "memory", "adv"].includes(want);
+      // ★ "ui"（外观）也要给保存栏：这一页以前没有「保存设置」，改了主题/字号
+      //   只能靠 onchange 各自回写；给上保存栏更符合预期（也能一并提交勾选项）。
+      const needsSave = ["model", "agent", "safety", "memory", "adv", "ui"].includes(want);
       if (needsSave && pane.querySelector("input, select, textarea")) {
         body.querySelectorAll(".save-bar").forEach((el) => el.remove());
         const bar = document.createElement("div");
@@ -1604,6 +1607,7 @@ async function renderGeneralSettings(body) {
   if (th) { th.value = S.theme; th.onchange = () => applyTheme(th.value); }
   const cur = $("#g-currency"); if (cur) cur.value = ui.currency || "CNY";
   bindGeneralExtras();
+  bindUiExtras();
 
   // 立刻生效的本地项
   // ★ 「显示本轮用量 / 信息面板 / 显示思考过程 / 界面动画」这类开关已从设置里移除：
@@ -1636,6 +1640,39 @@ async function renderGeneralSettings(body) {
 }
 
 /* 通用页新增控件的绑定（配色 / 字号 / 字体 / 宽度 / 动画） */
+/** 外观页的即时生效项。
+    ★★ 为什么必须单独绑：外观页的 #u-theme / #u-fontsize 一直**没有 onchange**。
+       它们已被 upgradeSelects 升级成按钮组，点一下会派发 change，但没人接 ——
+       于是「浅色 / 深色 / 跟随系统」在界面上完全没反应；而且这一页原先也不在
+       needsSave 里（没有「保存设置」按钮），重开必然回到默认值。
+       修法：绑 onchange 并**立刻写回后端**，不再依赖保存按钮。 */
+function bindUiExtras() {
+  // 用完整的 ui 对象提交，避免后端把没带上的字段清掉
+  const curUi = () => Object.assign({}, ((S.boot || {}).ui) || {});
+  const th = $("#u-theme");
+  if (th) {
+    th.value = S.theme || "light";
+    th.onchange = () => {
+      applyTheme(th.value);
+      saveUiQuiet(Object.assign(curUi(), { theme: th.value }));
+    };
+  }
+  const fs = $("#u-fontsize");
+  if (fs) {
+    fs.onchange = () => {
+      const n = Number(fs.value) || 17;
+      applyFontSize(n);
+      saveUiQuiet(Object.assign(curUi(), { font_size: n }));
+    };
+  }
+  const lg = $("#u-lang");
+  if (lg) lg.onchange = () => saveUiQuiet(Object.assign(curUi(), { language: lg.value }));
+  const df = $("#u-diff");
+  if (df) df.onchange = () => saveUiQuiet(Object.assign(curUi(), { diff_review: df.checked }));
+  const nf = $("#u-notify");
+  if (nf) nf.onchange = () => saveUiQuiet(Object.assign(curUi(), { desktop_notifications: nf.checked }));
+}
+
 function bindGeneralExtras() {
   // 基础配色：立即生效
   const sk = $("#g-skin");
@@ -1666,6 +1703,37 @@ function bindGeneralExtras() {
         applyChatWidth(b.dataset.v);
       };
     });
+  }
+  // 费用显示币种：只影响展示。fmtCost 读的是 localStorage，所以写这里就真的生效。
+  // ★ 旧写法只在渲染时 `cur.value = ui.currency || "CNY"`，而 UI 配置里**根本没有
+  //   currency 这个字段** → 每次重绘都被重置回 CNY，且没有任何 onchange，选了没用。
+  const curSel = $("#g-currency");
+  if (curSel) {
+    let savedCur = "CNY";
+    try { savedCur = localStorage.getItem("fengcode_currency") || (S.boot && S.boot.ui && S.boot.ui.currency) || "CNY"; } catch (e) {}
+    curSel.value = savedCur;
+    curSel.onchange = () => {
+      try { localStorage.setItem("fengcode_currency", curSel.value); } catch (e) {}
+      saveUiQuiet({ currency: curSel.value });
+      // 立刻按新币种重绘费用显示（信息面板与底部状态栏）
+      try { renderInfoPanel(); } catch (e) {}
+      try { renderStatusBar(); } catch (e) {}
+      toast("已切换为 " + curSel.value, "ok");
+    };
+  }
+  // 关闭窗口时的行为：桌面端专有。改了立刻推给主进程，并存进配置（下次启动沿用）。
+  const clSel = $("#g-close");
+  if (clSel) {
+    clSel.value = (S.boot && S.boot.ui && S.boot.ui.close_action) || "tray";
+    clSel.onchange = () => {
+      saveUiQuiet({ close_action: clSel.value });
+      try {
+        if (window.fengcode && window.fengcode.setCloseAction) {
+          window.fengcode.setCloseAction(clSel.value);
+        }
+      } catch (e) {}
+      toast(clSel.value === "quit" ? "关闭窗口将直接退出" : "关闭窗口将收进托盘继续跑", "ok");
+    };
   }
   // 界面动画开关
   // ★ 按钮已从设置里移除（动画属于界面固有行为，不给用户关）。默认开。
@@ -2763,6 +2831,12 @@ async function newSession() {
     paintPermChip();
     clearMessages();
     emptyState();
+    // ★★ 新会话必须回到「模型偏好」里的默认模型。
+    //   旧写法不重置 S.model —— 上一个会话用的什么模型，新会话就跟着用，
+    //   于是「删掉老对话后自动建的新对话」与手动新建的，都拿不到设置的默认模型。
+    S.model = (S.boot && S.boot.default_model) || "";
+    syncModelSelect();
+    applyContextLimit(S.boot);
     // ★ 新会话的上下文占用必须归零（实测「说完话切换新对话，上下文占用
     //   还是老对话的几十 K，重启才变成 0K」）。新建的会话没有任何历史，
     //   用量就该是 0；不显式复位就会沿用上一个会话的读数。
@@ -6713,9 +6787,9 @@ async function renderLanPanel(box) {
       <div class="row" style="gap:14px;align-items:flex-start;flex-wrap:nowrap">
         <div class="lan-qr">${d.qr || `<div class="help" style="padding:20px">二维码不可用，请用右侧链接</div>`}</div>
         <div style="flex:1;min-width:0">
-          <div class="sr-title" style="margin-bottom:4px">用手机相机扫码</div>
+          <div class="sr-title" style="margin-bottom:4px">用手机自带的相机扫码</div>
           <div class="help" style="margin-bottom:8px">
-            链接包含本次配对令牌，别转发给他人；关闭后令牌失效。
+            <strong>别用微信扫一扫</strong>：微信内置浏览器会丢掉链接里的配对参数，页面会停在空白页。<br>链接包含本次配对令牌，别转发给他人；关闭后令牌失效。
           </div>
           <div class="mono" style="font-size:11.5px;word-break:break-all;padding:7px 9px;
                background:var(--bg-sunken);border-radius:8px;border:1px solid var(--border)">${esc(d.url || "")}</div>
@@ -7278,6 +7352,13 @@ PAGES.settings = async () => {
           <select id="a-search">${modelOpts(d.models, agent.search_model, "随会话自动选择")}</select></div>
         <div class="field"><label>子代理模型</label>
           <select id="a-subagent">${modelOpts(d.models, agent.subagent_model, "跟随主代理模型")}</select></div>
+        <div class="field"><label>推理强度<span class="hint">越高思考越充分，也越慢、越费</span></label>
+          <select id="a-effort">
+            <option value=""${!agent.effort ? " selected" : ""}>跟随供应商默认</option>
+            <option value="low"${agent.effort === "low" ? " selected" : ""}>低（快）</option>
+            <option value="medium"${agent.effort === "medium" ? " selected" : ""}>中</option>
+            <option value="high"${agent.effort === "high" ? " selected" : ""}>高（准）</option>
+          </select></div>
         <div class="field" style="margin-left:18px"><label>子代理推理强度</label>
           <select id="a-subagent-effort">
             <option value=""${!agent.subagent_effort ? " selected" : ""}>继承默认</option>
@@ -7549,7 +7630,8 @@ PAGES.settings = async () => {
       <div class="card"><h3>模型<span class="hint">仅账号登录后可用</span></h3>
         <div class="help" style="margin-bottom:10px">登录后可获取万象全部模型，消耗账号点数。</div>
         <div class="row" style="margin-bottom:10px">
-          <button class="btn primary" id="acct-getmodels">获取模型</button>
+          <button class="btn primary" id="acct-getmodels">测试并获取模型</button>
+          <button class="btn" id="acct-save" disabled>保存</button>
           <span id="acct-mmsg" style="font-size:12.5px;color:var(--text-dim)"></span>
         </div>
         <div id="acct-models"></div>
@@ -7634,6 +7716,10 @@ PAGES.settings = async () => {
           <span class="tag">${esc(p.kind)}</span>
           ${p.has_key ? '<span class="tag ok">已配密钥</span>' : '<span class="tag warn">缺密钥</span>'}
           ${p.enabled ? "" : '<span class="tag">已停用</span>'}
+          <!-- ★ 保存按钮放在标签之后、右上角操作组之前（用户要求「提到每个供应商的顶部」）。
+               原来它在整段模型列表的**最下面**，模型一多就要滚很久才够得到。 -->
+          <button class="btn sm" data-psave="${esc(p.name)}"
+            title="取消勾选后点保存，这个模型就会从列表里去掉">保存</button>
           <span class="spacer"></span>
           <button class="btn sm ghost" data-pedit="${esc(p.name)}">编辑</button>
           <button class="btn sm ghost" data-ptest="${esc(p.name)}">测试并获取模型</button>
@@ -7646,10 +7732,6 @@ PAGES.settings = async () => {
           : '<div class="help">还没有模型。点「测试并获取模型」拉取，或在「编辑」里手填。</div>'}
         <!-- ★ 1.5.0：勾选改动**不即时生效**，点这里才提交（用户要的「保存按钮」）。
              为什么改：旧写法勾掉只是把行变灰、模型仍留在列表里，看着像没生效。 -->
-        <div class="row" style="margin-top:10px">
-          <button class="btn sm" data-psave="${esc(p.name)}">保存</button>
-          <span class="help" style="margin:0">取消勾选后点保存，这个模型就会从列表里去掉</span>
-        </div>
       </div>`;
     };
 
@@ -8144,6 +8226,7 @@ async function loadRecoveryGlobal() {
         subagent_model: val("a-subagent") || null,
         vision_model: val("a-vision") || null,
         search_model: val("a-search") || null,
+        effort: val("a-effort"),
         subagent_effort: val("a-subagent-effort"),
         reflection: chk("a-reflect"),
         submit_checklist: chk("a-checklist"),
@@ -8416,6 +8499,8 @@ function renderAccountModels() {
   const box = $("#acct-models");
   if (!box) return;
   const a = S.account || {};
+  const svOff = $("#acct-save");
+  if (svOff) svOff.disabled = true;
   if (!a.logged_in) {
     box.innerHTML = `<div class="help">登录后才能获取模型。</div>`;
     return;
@@ -8428,23 +8513,85 @@ function renderAccountModels() {
     box.innerHTML = `<div class="help">点上方「获取模型」拉取。</div>`;
     return;
   }
+  // ★ 1.5.x：账号页的勾选也改成**延迟提交**（与模型服务页一致）。
+  //   旧写法勾掉就立刻保存，模型仍留在列表里（只是变灰），看着像没生效；
+  //   用户要的是「取消勾选 → 点保存 → 它就消失」。
+  box.dataset.defer = "1";
+  const sv = $("#acct-save");
+  if (sv) sv.disabled = false;
   box.innerHTML = models.map((m) => modelRowHtml(p, m)).join("");
   bindModelRows(box, saveModelOverride);
 }
 
-/** 账号页「获取模型」：建（或复用）密钥 → 写进供应商 → 拉回模型列表。 */
+/** 账号页「测试并获取模型」：建（或复用）密钥 → 写进供应商 → 拉回模型列表。
+    ★★ 与「模型服务」页的「测试并获取模型」保持一致的体验：先真连一次拿到可用模型清单，
+      弹窗让你勾选要留的，再保存 —— 而不是直接把整份清单写进去。 */
 async function accountBindModels() {
   const btn = $("#acct-getmodels");
   if (btn) btn.disabled = true;
-  setText("#acct-mmsg", "获取中…");
+  setText("#acct-mmsg", "测试中…");
   try {
+    // 1) 先取可用模型（这一步会真的用到账号，能反映密钥是否可用）
     const r = await api("/api/account", { method: "POST", body: { action: "bind" } });
     if (!r.ok) {
       setText("#acct-mmsg", r.error || "获取失败");
       return;
     }
-    const n = (r.models || []).length;
-    setText("#acct-mmsg", n ? `已获取 ${n} 个模型` : "该账号暂无可用模型");
+    const all = r.models || [];
+    if (!all.length) {
+      setText("#acct-mmsg", "该账号暂无可用模型");
+      return;
+    }
+    // 2) 弹窗勾选：默认勾上已在用的那些（首次则全选）
+    const pname = (S.account || {}).provider_name || "wanxiang-account";
+    const cur = (((S.boot || {}).providers) || []).find((x) => x.name === pname) || {};
+    const has = Array.isArray(cur.models) && cur.models.length ? cur.models : all;
+    modal(`可用模型（${all.length}）`,
+      `<div style="max-height:50vh;overflow:auto">${all.map((m) =>
+        `<label class="switch" style="display:block;padding:3px 0">
+          <input type="checkbox" value="${esc(m)}"${has.includes(m) ? " checked" : ""}> ${esc(m)}</label>`).join("")}</div>`,
+      `<button class="btn" data-close>取消</button><button class="btn primary" id="acct-muse">用选中的模型</button>`);
+    $("#acct-muse").onclick = async () => {
+      const sel = $$("#modal-body input[type=checkbox]:checked").map((x) => x.value);
+      if (!sel.length) return toast("至少选一个", "err");
+      try {
+        await api("/api/providers", { method: "POST", body: { action: "set_models", name: pname, models: sel } });
+        closeModal();
+        setText("#acct-mmsg", `已保存 ${sel.length} 个模型`);
+        toast(`已保存，选了 ${sel.length} 个模型`, "ok");
+        S.boot = await api("/api/bootstrap");
+        syncModelSelect();
+        applyContextLimit(S.boot);
+        renderInfoPanel();
+        renderStatusBar();
+        renderAccountModels();
+        if (typeof window.__renderProviders === "function") window.__renderProviders();
+      } catch (e) { toast("保存失败：" + e.message, "err"); }
+    };
+    setText("#acct-mmsg", `已测试，拿到 ${all.length} 个模型`);
+  } catch (e) {
+    setText("#acct-mmsg", "获取失败：" + e.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+/** 账号页「保存」：把当前勾上的模型作为整体提交（与模型服务页的保存同义）。
+    ★ 取消勾选的模型会从列表里去掉；要重新加上得再点「测试并获取模型」。 */
+async function accountSaveModels() {
+  const box = $("#acct-models");
+  const sv = $("#acct-save");
+  if (!box) return;
+  const keep = $$("[data-mon]", box)
+    .filter((el) => el.checked)
+    .map((el) => String(el.dataset.mon || "").split("|")[1])
+    .filter(Boolean);
+  if (!keep.length && !confirm("一个模型都不留？保存后账号就没有可用模型了。")) return;
+  const pname = (S.account || {}).provider_name || "wanxiang-account";
+  if (sv) sv.disabled = true;
+  try {
+    await api("/api/providers", { method: "POST", body: { action: "set_models", name: pname, models: keep } });
+    toast(`已保存，保留 ${keep.length} 个模型`, "ok");
     S.boot = await api("/api/bootstrap");
     syncModelSelect();
     applyContextLimit(S.boot);
@@ -8452,12 +8599,8 @@ async function accountBindModels() {
     renderStatusBar();
     renderAccountModels();
     if (typeof window.__renderProviders === "function") window.__renderProviders();
-    if (n) toast("模型已接入，勾选要用的即可", "ok");
-  } catch (e) {
-    setText("#acct-mmsg", "获取失败：" + e.message);
-  } finally {
-    if (btn) btn.disabled = false;
-  }
+  } catch (e) { toast("保存失败：" + e.message, "err"); }
+  if (sv) sv.disabled = false;
 }
 
 /* ==========================================================================
@@ -8616,6 +8759,35 @@ function renderAccountPane() {
   const cur = esc(a.currency || "");
   const bal = (a.balance == null) ? "—" : `${a.balance} ${cur}`;
   const usedLine = (a.used == null) ? "" : `<div class="help">已用 ${a.used} ${cur}</div>`;
+  // ★ Fengcode 专属额度（站点发放在内置密钥上的额度）：有才显示，没有就不占地方。
+  //   1 点 = 500 万积分；token 额度按 token 数展示。
+  const fmtGrantNum = (n) => {
+    if (n >= 100000000) return (n / 100000000).toFixed(2).replace(/\.?0+$/, "") + " 亿";
+    if (n >= 10000) return (n / 10000).toFixed(2).replace(/\.?0+$/, "") + " 万";
+    return String(n);
+  };
+  const fmtPoints = (q) => {
+    const v = q / 5000000;
+    return Number.isInteger(v) ? String(v) : String(Math.round(v * 10000) / 10000);
+  };
+  const grants = Array.isArray(a.fengcode_grants) ? a.fengcode_grants : [];
+  let grantLines = "";
+  if (grants.length) {
+    const rows = grants.map((g) => {
+      const isTok = g.kind === "token";
+      const rem = (g.remain == null || g.remain < 0)
+        ? "不限"
+        : (isTok ? fmtGrantNum(g.remain) + " token" : fmtPoints(g.remain) + " 点");
+      const tot = (!g.amount_total || g.amount_total <= 0)
+        ? "不限"
+        : (isTok ? fmtGrantNum(g.amount_total) + " token" : fmtPoints(g.amount_total) + " 点");
+      const exp = g.expire_at
+        ? new Date(g.expire_at * 1000).toLocaleDateString("zh-CN")
+        : "永久";
+      return `<div class="help" style="margin-top:2px">· ${esc(g.name || "专属额度")}：剩余 <b>${esc(rem)}</b> / 共 ${esc(tot)}，有效期至 ${esc(exp)}${g.daily_reset ? "（每日重置）" : ""}</div>`;
+    }).join("");
+    grantLines = `<div style="margin-top:10px"><div class="help" style="font-weight:600">Fengcode 专属额度</div>${rows}</div>`;
+  }
   box.innerHTML = `
     <div class="acct-row">
       <div class="acct-who">
@@ -8628,6 +8800,7 @@ function renderAccountPane() {
         ${usedLine}
       </div>
     </div>
+    ${grantLines}
     <div class="row" style="margin-top:12px">
       <button class="btn" id="acct-refresh">刷新余额</button>
       <button class="btn ghost" id="acct-logout">退出登录</button>
@@ -8670,6 +8843,8 @@ function renderAccountPane() {
     gm.disabled = false;
     gm.onclick = () => accountBindModels();
   }
+  const gs = $("#acct-save");
+  if (gs) gs.onclick = () => accountSaveModels();
 }
 
 /** 首次进入时问一次「要不要登录看余额」。
@@ -9027,6 +9202,12 @@ async function boot() {
     S.account = d.account || { logged_in: false };
     S.model = d.default_model || "";
     if (d.ui && d.ui.theme) applyTheme(d.ui.theme);
+    // 把「关闭窗口时的行为」推给桌面主进程（网页版没有这个能力，静默跳过）
+    try {
+      if (window.fengcode && window.fengcode.setCloseAction) {
+        window.fengcode.setCloseAction((d.ui && d.ui.close_action) || "tray");
+      }
+    } catch (e) {}
     applyFontSize((d.ui && d.ui.font_size) || 17);
     syncModelSelect();
     // 概览面板需要：当前模型的上下文上限 + 压缩阈值
@@ -9079,11 +9260,24 @@ async function boot() {
     }
   } catch (e) {
     setStatus("err", "连接失败");
+    // ★★ 手机上的失败原因和本机完全不同，提示必须分开写。
+    //   旧写法在手机上只显示「请确认服务已启动：运行 start.bat」—— 手机哪儿来的
+    //   start.bat，用户看到的只是「加载完啥都没有」，根本无从下手。
+    const isPhone = !/^(127\.0\.0\.1|localhost|::1)$/.test(location.hostname);
+    const noPair = isPhone && !PAIR;
     msgBox().innerHTML = `<div class="empty" style="margin-top:80px">
       <div class="big">${icon("warning", 34)}</div>
-      <div style="font-size:14px;color:var(--danger);margin-bottom:8px">无法连接后端</div>
+      <div style="font-size:14px;color:var(--danger);margin-bottom:8px">${
+        noPair ? "这个链接缺少配对信息" : "无法连接后端"}</div>
       <div style="font-size:12.5px">${esc(e.message)}</div>
-      <div style="font-size:12.5px;margin-top:10px">请确认服务已启动：在项目目录运行 <code>start.bat</code></div>
+      ${isPhone
+        ? `<div style="font-size:12.5px;margin-top:10px;line-height:1.9;text-align:left;display:inline-block">
+             <div>1. 回到电脑上，确认「设置 → 远程和手机访问」里已开启</div>
+             <div>2. 用手机<strong>自带的相机</strong>扫那个二维码</div>
+             <div style="color:var(--text-soft)">不要用微信扫一扫：它的内置浏览器会丢掉链接里的配对参数，就会停在这一页。</div>
+             <div>3. 二维码每次开关都会换，重新开一次再扫</div>
+           </div>`
+        : `<div style="font-size:12.5px;margin-top:10px">请确认服务已启动：在项目目录运行 <code>start.bat</code></div>`}
     </div>`;
   }
 }

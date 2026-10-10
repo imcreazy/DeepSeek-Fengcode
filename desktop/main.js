@@ -61,6 +61,9 @@ function resolveBackendTarget() {
 
 let mainWindow = null;
 let tray = null;
+/* ★ 关闭窗口时的行为：由渲染进程按配置推过来（见 preload 的 setCloseAction）。
+   默认「收进托盘继续跑」—— 与旧版硬编码行为一致，未配置时不会突然变成退出。 */
+let closeAction = "tray";
 let backend = null;          // Python 子进程
 let backendStartedByUs = false;
 let quitting = false;
@@ -520,9 +523,13 @@ function createWindow() {
   });
 
   mainWindow.on("close", (e) => {
-    // 关窗口 = 最小化到托盘静默后台运行（除非真退出）。
-    // 后台常驻但不弹任何通知，用户需要时点托盘图标即可。
-    if (!quitting && tray) {
+    // 关窗口的行为由设置决定（默认收进托盘静默后台运行，除非真退出）。
+    // ★ 旧写法硬编码为「有托盘就隐藏」，于是设置里的那个下拉选了没用。
+    if (closeAction === "quit" || quitting) {
+      quitting = true;      // 标记真退出，避免被别处的窗口事件拦下
+      return;
+    }
+    if (tray) {
       e.preventDefault();
       mainWindow.hide();
     }
@@ -1077,6 +1084,12 @@ ipcMain.handle("fengcode:pickFolder", async (_e, startPath) => {
   const r = await dialog.showOpenDialog(mainWindow, opts);
   if (!r || r.canceled || !r.filePaths || !r.filePaths.length) return "";
   return r.filePaths[0];
+});
+
+ipcMain.handle("fengcode:setCloseAction", (_e, action) => {
+  closeAction = action === "quit" ? "quit" : "tray";
+  log("closeAction = " + closeAction);
+  return true;
 });
 
 ipcMain.handle("fengcode:windowAction", (_e, action) => {

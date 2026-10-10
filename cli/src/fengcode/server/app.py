@@ -851,6 +851,7 @@ async def api_bootstrap(request: Any) -> Response:
             "subagent_model": cfg.agent.subagent_model,
             "vision_model": cfg.agent.vision_model,
             "search_model": cfg.agent.search_model,
+            "effort": cfg.agent.effort,
             "subagent_effort": cfg.agent.subagent_effort,
             "temperature": cfg.agent.temperature,
             "system_prompt_extra": cfg.agent.system_prompt_extra,
@@ -1117,6 +1118,10 @@ async def _account_bind(acc: Any, body: dict[str, Any]) -> Response:
 
     preset = _presets().get("wanxiang") or {}
     prov = mgr.get_provider(pname)
+    # ★ Fengcode 客户端标识头：站点可据此把内置密钥限定在 Fengcode 客户端内使用
+    #   （配合站点「Fengcode 专属」页的客户端校验开关；开关未开时该头无副作用）。
+    _hdrs: dict[str, Any] = dict(getattr(prov, "headers", None) or {}) if prov is not None else {}
+    _hdrs["X-Fengcode-Client"] = "fengcode"
     patch: dict[str, Any] = {
         "name": pname,
         "kind": "openai",
@@ -1125,6 +1130,7 @@ async def _account_bind(acc: Any, body: dict[str, Any]) -> Response:
         "models_url": f"{base}/v1/models",
         "api_key": got["api_key"],
         "enabled": True,
+        "headers": _hdrs,
     }
     # 思考参数必须带上，否则模型完全不思考（见 catalog 里万象预设的说明）
     for k in ("default_effort", "effort_style"):

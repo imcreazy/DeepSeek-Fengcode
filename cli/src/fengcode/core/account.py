@@ -211,6 +211,9 @@ class AccountManager:
             rc = pick("request_count")
             if rc is not None:
                 out["request_count"] = rc
+        # ★ Fengcode 专属额度（站点发放在内置密钥上的额度），供账号页展示
+        grants = d.get("fengcode_grants")
+        out["fengcode_grants"] = grants if isinstance(grants, list) else []
         return out
 
     # ---- 网络 ------------------------------------------------------------
@@ -346,9 +349,37 @@ class AccountManager:
                 for k in ("username", "display_name", "quota", "used_quota", "request_count"):
                     if user.get(k) is not None:
                         d[k] = user.get(k)
+                # ★ Fengcode 专属额度：顺带拉一次；站点版本较旧或接口异常都不影响账户信息
+                try:
+                    grants = await self._fetch_fengcode_grants(cli, base, tok)
+                    if grants is not None:
+                        d["fengcode_grants"] = grants
+                except Exception:  # noqa: BLE001
+                    pass
                 d["last_ok_at"] = time.time()
                 self._save(d)
                 return self._public(d, user)
+
+    async def _fetch_fengcode_grants(
+        self, cli: httpx.AsyncClient, base: str, tok: str
+    ) -> list[dict[str, Any]] | None:
+        """拉取 Fengcode 专属额度（``GET /api/user/fengcode-quota``）。
+
+        ★ 站点未安装该接口（版本较旧）时返回 None，由调用方保留旧值——
+          不能因为站点少一个接口就让账户信息整体失败。
+        """
+        try:
+            resp = await cli.get(
+                f"{base}/api/user/fengcode-quota",
+                headers={"Authorization": "Bearer " + tok},
+            )
+        except httpx.HTTPError:
+            return None
+        body = _payload(resp)
+        if not body.get("success"):
+            return None
+        grants = ((body.get("data") or {}).get("grants")) or []
+        return grants if isinstance(grants, list) else None
 
     async def logout(self) -> None:
         """登出：尽力通知站点释放会话，然后清本地凭证。"""

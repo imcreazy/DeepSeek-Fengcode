@@ -131,6 +131,10 @@
 | 字号缩放 | `applyFontSize()`（写 `html[data-fs]`，样式全部 `calc(Npx * var(--ui-scale))`） |
 | **逐模型配置行** | `modelRowHtml()` / `bindModelRows()` —— 模型服务页与账号页**共用同一套渲染与绑定**。★★ 结构硬约束：字段区必须**整体只包在一个 `.mcfg` 里**（内含「容量」「单价」两个 `.mline`）。旧写法把两组并列成 `.mrow` 网格的第 3、第 4 个子元素，而该行只有 3 列 → 第 4 个被自动排到**第二行第 1 列**（26px 宽），价格字段从整行最左侧溢出、与上方字段完全错位（实测 x=273 vs x=521）。改这块前先看 `app.css` 里 `.mrow` / `.mcfg` 段落的说明 |
 | **容量下限** | `bindModelRows()` 里的 `MINS` + `server/app.py` 的 `model_override` 分支 | 上下文窗口 ≥ 64000、输出上限 ≥ 32000，**两处都要有**（前端即时拦并还原输入框，后端才是真正的闸）。★ 留空（null / 空串）表示「不限制」，不受下限约束；★ 后端必须把空串**归一成 None**，否则 pydantic 校验 `int\\|None` 会抛异常、接口直接 500（实测复现过） |
+| **推理强度（effort）** | `config/schema.py` 的 `AgentConfig.effort` / `subagent_effort` → `core/agent.py` 的 `_call_once` / `_stream_once` 传 `effort=` → `llm/openai_client.py::_apply_effort` （映射 `reasoning_effort`）／`anthropic_client`・`gemini_client`（映射 thinking 预算）。★ 参数断在哪一环都会表现为「界面上设了等于没设」，排查时**从 schema 往下一路确认**。★ 留空 = 用供应商声明的默认档（`router` 会 `setdefault(provider.default_effort)`） |
+| **账号页模型区** | `accountBindModels()`（测试并获取 → 弹窗勾选 → `set_models`）/ `accountSaveModels()`（勾选延迟提交后保存）。与模型服务页**共用** `modelRowHtml()` / `bindModelRows()` / `saveModelOverride()`。★ 两页都要 `box.dataset.defer = "1"`，否则勾选会即时落盘、看着像没生效 |
+| **桌面端关闭行为** | `ui.close_action`（tray/quit）→ 前端 `bindGeneralExtras()` 推给 `desktop/preload.js::setCloseAction` → `desktop/main.js` 的 `closeAction` 变量决定 `mainWindow.on("close")` 收托盘还是退出 |
+| **外观页即时绑定** | `bindUiExtras()` —— `#u-theme` / `#u-fontsize` / `#u-lang` / `#u-diff` / `#u-notify` 的 onchange。★★ 这些控件曾被 `upgradeSelects` 升级成按钮组但**没人接 change**，于是「改了没反应、重开回默认」 |
 
 ### 3.5 ★★ 会话级运行状态与「多对话并行」（改这几块前必读）
 

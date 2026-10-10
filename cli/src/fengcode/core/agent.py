@@ -1301,8 +1301,13 @@ class Agent:
         # ★ 1.5.0：把「模型偏好」页的温度接到真实调用上。
         #   以前界面上有这一项、存进配置后从不被读取，设了等于没设。
         #   显式传值会覆盖 provider 侧的温度（router 用 setdefault，只在缺省时兜底）。
+        # ★★ 推理强度必须传下去才算「真有效」。
+        #   后端早就能按档位映射（openai_client 的 _apply_effort → reasoning_effort /
+        #   thinking_budget，anthropic / gemini 各有对应实现），但这条链路从来没传过值，
+        #   于是界面上设了等于没设。留空则交给 router 用供应商声明的默认档。
         return await self.llm.chat(msgs, model=ref, tools=specs or None,
-                                   temperature=self.config.agent.temperature)
+                                   temperature=self.config.agent.temperature,
+                                   effort=(self.config.agent.effort or None))
 
     async def _stream_once(
         self, msgs: list[Message], specs: list[ToolSpec], sid: str, *,
@@ -1323,7 +1328,8 @@ class Agent:
 
         try:
             async for ev in self.llm.chat_stream(msgs, model=ref, tools=specs or None,
-                                                 temperature=self.config.agent.temperature):
+                                                 temperature=self.config.agent.temperature,
+                                                 effort=(self.config.agent.effort or None)):
                 # ★ 用户点「停止」要立刻生效：_cancel 一置位就跳出流式接收。
                 #   旧写法只在「步与步之间」检查，流式过程中完全不看 ——
                 #   一次调用可能要跑几百秒（实测 651 秒），点停止像没反应。
